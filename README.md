@@ -25,6 +25,7 @@ ZAR cash-in → queued RLUSD settlement on XRPL Testnet → recipient wallet →
 | Ndumiso Zondi | ZNDNDU007 |
 | Marco Klopper | KLPMAR012 |
 | Muki Mdluli | MDLMUK001 |
+| Rafaela Stevenson | STVRAF001 |
 
 ## Tech Stack
 
