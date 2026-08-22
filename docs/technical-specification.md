@@ -1,6 +1,7 @@
 # CrossFX — Business and Technical Specification
 
 *ECO5040W — Financial Software Engineering, UCT — Group 4*
+*Ndumiso Zondi (ZNDNDU007) · Marco Klopper (KLPMAR012) · Muki Mdluli (MDLMUK001) · Rafaela Stevenson (STVRAF001)*
 
 > Target length: ~10–15 pages. Fill in each section below as the design solidifies.
 > Due alongside the check-in on 18 September.
