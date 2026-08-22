@@ -3,13 +3,23 @@ Centralised app configuration, loaded from environment variables (.env).
 Keep all "magic numbers" (fees, limits, margins) here so they stay configurable
 per the project brief's requirement that all fees/limits be configurable.
 """
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     app_name: str = "CrossFX"
     environment: str = "development"
     secret_key: str
+
+    # JWT (app.security.jwt / app.dependencies.get_current_user)
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 60
+
+    # Comma-separated browser origins allowed to call this API (Track 4's frontend).
+    # Kept as a plain string rather than list[str]: pydantic-settings expects JSON
+    # array syntax for list-typed env vars, which is an awkward thing to hand-edit
+    # in a .env file. See cors_origins_list below for the parsed form.
+    cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
     database_url: str
 
@@ -20,7 +30,9 @@ class Settings(BaseSettings):
     xrpl_testnet_json_rpc: str = "https://s.altnet.rippletest.net:51234"
     xrpl_testnet_wss: str = "wss://s.altnet.rippletest.net:51233"
     rlusd_issuer_address: str
+    rlusd_currency_code: str = "USD"
     platform_wallet_seed: str | None = None
+    platform_wallet_address: str | None = None
 
     # FX / fees
     exchange_rate_source: str = "mock"
@@ -40,8 +52,11 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     settlement_stream_name: str = "crossfx-settlement-queue"
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
 
 settings = Settings()
