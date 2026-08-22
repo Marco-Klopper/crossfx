@@ -1,0 +1,365 @@
+<!doctype html not included per instructions-->
+<title>CrossFX Work Split</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,500;0,6..72,600;1,6..72,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #eef2f0;
+    --surface: #ffffff;
+    --surface-2: #e6ebe8;
+    --ink: #17211e;
+    --ink-muted: #52605c;
+    --accent: #1f6f5c;
+    --accent-soft: #dcece6;
+    --accent-2: #b5651d;
+    --accent-2-soft: #f3e3d2;
+    --border: #d3dbd6;
+    --shadow: 0 1px 2px rgba(23,33,30,0.06), 0 8px 24px -12px rgba(23,33,30,0.18);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101614;
+      --surface: #1a2320;
+      --surface-2: #212b27;
+      --ink: #e9ede9;
+      --ink-muted: #9aaba4;
+      --accent: #57c2a3;
+      --accent-soft: #1d3630;
+      --accent-2: #e0954d;
+      --accent-2-soft: #3a2c1c;
+      --border: #2a3330;
+      --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 12px 28px -14px rgba(0,0,0,0.6);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #101614;
+    --surface: #1a2320;
+    --surface-2: #212b27;
+    --ink: #e9ede9;
+    --ink-muted: #9aaba4;
+    --accent: #57c2a3;
+    --accent-soft: #1d3630;
+    --accent-2: #e0954d;
+    --accent-2-soft: #3a2c1c;
+    --border: #2a3330;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 12px 28px -14px rgba(0,0,0,0.6);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    line-height: 1.55;
+    padding: clamp(24px, 5vw, 64px);
+  }
+
+  .wrap { max-width: 1080px; margin: 0 auto; }
+
+  .eyebrow {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  h1 {
+    font-family: 'Newsreader', serif;
+    font-weight: 600;
+    font-size: clamp(2rem, 4vw, 2.7rem);
+    margin: 0.3em 0 0.15em;
+    text-wrap: balance;
+  }
+
+  .sub { color: var(--ink-muted); max-width: 62ch; margin: 0 0 1.4em; }
+
+  header.top {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 24px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 28px;
+    margin-bottom: 36px;
+  }
+
+  .meta {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.8rem;
+    color: var(--ink-muted);
+    display: grid;
+    gap: 4px;
+    text-align: right;
+  }
+  .meta strong { color: var(--ink); font-weight: 500; }
+
+  h2.section-title {
+    font-family: 'Newsreader', serif;
+    font-weight: 600;
+    font-size: 1.5rem;
+    margin: 2.2em 0 0.6em;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+  }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 22px 24px 24px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .card .num {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+
+  .card h3 {
+    font-family: 'Newsreader', serif;
+    font-size: 1.28rem;
+    font-weight: 600;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .card .role {
+    font-size: 0.85rem;
+    color: var(--ink-muted);
+    font-style: italic;
+  }
+
+  .card ul {
+    margin: 0;
+    padding-left: 1.1em;
+    font-size: 0.92rem;
+  }
+  .card ul li { margin-bottom: 4px; }
+
+  .label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    margin-top: 6px;
+  }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 2px 7px;
+    color: var(--ink-muted);
+  }
+
+  .dep {
+    font-size: 0.85rem;
+    background: var(--accent-2-soft);
+    border-left: 3px solid var(--accent-2);
+    padding: 8px 10px;
+    border-radius: 0 6px 6px 0;
+  }
+  .dep strong { color: var(--accent-2); }
+
+  .deliv {
+    font-size: 0.85rem;
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    padding: 8px 10px;
+    border-radius: 0 6px 6px 0;
+  }
+  .deliv strong { color: var(--accent); }
+
+  .diagram-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    box-shadow: var(--shadow);
+    overflow-x: auto;
+  }
+
+  .timeline {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 6px 16px;
+    font-size: 0.88rem;
+    margin-top: 8px;
+  }
+  .timeline .date {
+    font-family: 'IBM Plex Mono', monospace;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  .timeline .desc { color: var(--ink-muted); }
+
+  footer {
+    margin-top: 3em;
+    padding-top: 1.4em;
+    border-top: 1px solid var(--border);
+    font-size: 0.8rem;
+    color: var(--ink-muted);
+  }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <div class="eyebrow">ECO5040W · Financial Software Engineering</div>
+      <h1>CrossFX — Work Split &amp; Dependencies</h1>
+      <p class="sub">Four parallel tracks across the remittance platform: identity &amp; data, XRPL settlement &amp; security, FX/fee logic, and the frontend + testing + spec. Assign one person per track.</p>
+    </div>
+    <div class="meta">
+      <span><strong>Group 4</strong> — CrossFX</span>
+      <span>Check-in: <strong>18 Sep</strong> (spec + PoC scaffold)</span>
+      <span>Final demo: <strong>25 Sep</strong></span>
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <div class="card">
+      <div class="num">Track 1</div>
+      <h3>Backend Core — Identity &amp; Data</h3>
+      <div class="role">Auth, KYC, beneficiaries, DB schema</div>
+      <ul>
+        <li>Registration, login, JWT auth</li>
+        <li>Mock KYC flow and status</li>
+        <li>Beneficiary add/list/manage</li>
+        <li>Admin router, DB schema design</li>
+      </ul>
+      <div class="label">Owns</div>
+      <div class="chips">
+        <span class="chip">models/user.py</span>
+        <span class="chip">models/kyc.py</span>
+        <span class="chip">models/beneficiary.py</span>
+        <span class="chip">routers/auth.py</span>
+        <span class="chip">routers/kyc.py</span>
+        <span class="chip">routers/beneficiaries.py</span>
+        <span class="chip">routers/admin.py</span>
+      </div>
+      <div class="deliv"><strong>Ships:</strong> working auth + KYC + beneficiary API, spec §11 (Database Design)</div>
+      <div class="dep"><strong>Depends on:</strong> nothing — this is the foundation. Start first.</div>
+    </div>
+
+    <div class="card">
+      <div class="num">Track 2</div>
+      <h3>Settlement &amp; Security</h3>
+      <div class="role">XRPL, message queue, wallet custody</div>
+      <ul>
+        <li>XRPL Testnet integration, RLUSD TrustSet</li>
+        <li>Settlement worker consuming the queue</li>
+        <li>Wallet model + private-key encryption</li>
+        <li>Custodial-wallet design decision</li>
+      </ul>
+      <div class="label">Owns</div>
+      <div class="chips">
+        <span class="chip">services/xrpl_service.py</span>
+        <span class="chip">worker/settlement_worker.py</span>
+        <span class="chip">models/wallet.py</span>
+        <span class="chip">routers/wallet.py</span>
+        <span class="chip">security/encryption.py</span>
+      </div>
+      <div class="deliv"><strong>Ships:</strong> queued RLUSD settlement on Testnet, spec §9 &amp; §13 (Security Design)</div>
+      <div class="dep"><strong>Depends on:</strong> Track 1's user model (a wallet belongs to a user)</div>
+    </div>
+
+    <div class="card">
+      <div class="num">Track 3</div>
+      <h3>FX, Fees &amp; Remittance Flow</h3>
+      <div class="role">Quote, cash-in, cash-out</div>
+      <ul>
+        <li>FX rate service, fee calculation</li>
+        <li>Remittance model + quote endpoint</li>
+        <li>Simulated cash-in / cash-out</li>
+        <li>Remittance limits logic</li>
+      </ul>
+      <div class="label">Owns</div>
+      <div class="chips">
+        <span class="chip">services/fx_rate_service.py</span>
+        <span class="chip">services/fee_service.py</span>
+        <span class="chip">services/cashin_cashout_service.py</span>
+        <span class="chip">models/remittance.py</span>
+        <span class="chip">routers/remittances.py</span>
+      </div>
+      <div class="deliv"><strong>Ships:</strong> full quote → settle → cash-out flow, spec §4, §5, §6, §8, §10</div>
+      <div class="dep"><strong>Depends on:</strong> Track 1 (user/beneficiary) and Track 2 (settlement trigger to call)</div>
+    </div>
+
+    <div class="card">
+      <div class="num">Track 4</div>
+      <h3>Frontend, Performance &amp; Compliance Docs</h3>
+      <div class="role">Web app, load testing, remaining spec sections</div>
+      <ul>
+        <li>Web UI for the full sender/recipient journey</li>
+        <li>Load tests (locust/k6) against the live API</li>
+        <li>Spec §1–3, §7, §12, §14–15</li>
+        <li>Presentation &amp; demo script</li>
+      </ul>
+      <div class="label">Owns</div>
+      <div class="chips">
+        <span class="chip">frontend/</span>
+        <span class="chip">performance-testing/</span>
+        <span class="chip">docs/technical-specification.md</span>
+      </div>
+      <div class="deliv"><strong>Ships:</strong> working demo UI, load-test report, completed spec doc</div>
+      <div class="dep"><strong>Depends on:</strong> API contracts from Tracks 1 &amp; 3 (can mock early); needs the full stack up for load testing</div>
+    </div>
+
+  </div>
+
+  <h2 class="section-title">Dependency map</h2>
+  <div class="diagram-box">
+    <pre class="mermaid">
+flowchart LR
+  T1["Track 1\nIdentity &amp; Data\nauth · KYC · beneficiaries"]
+  T2["Track 2\nSettlement &amp; Security\nXRPL · queue · wallet"]
+  T3["Track 3\nFX, Fees &amp; Flow\nquote · cash-in/out"]
+  T4["Track 4\nFrontend, Perf &amp; Docs"]
+
+  T1 -->|user owns wallet| T2
+  T1 -->|user &amp; beneficiary records| T3
+  T2 -->|settlement trigger, RLUSD transfer| T3
+  T1 -->|API contract, mockable early| T4
+  T3 -->|quote &amp; remittance endpoints| T4
+  T2 -->|wallet balance endpoints| T4
+  T3 -.->|stable end-to-end flow required| T4
+    </pre>
+  </div>
+
+  <h2 class="section-title">Suggested sequencing</h2>
+  <div class="diagram-box">
+    <div class="timeline">
+      <div class="date">Now</div><div class="desc">Track 1 starts immediately — everyone else's models/endpoints hang off the user record. Track 4 begins UI scaffolding and screens against a mocked API in parallel.</div>
+      <div class="date">Once T1 auth lands</div><div class="desc">Track 2 wires wallets to real users; Track 3 wires quotes/remittances to real users and beneficiaries.</div>
+      <div class="date">Once T2 settlement works</div><div class="desc">Track 3 swaps its settlement call from a stub to the real queue/XRPL path.</div>
+      <div class="date">By 18 Sep</div><div class="desc">Spec sections owned by each track should be drafted (technical decisions feed Track 4's spec sections directly); PoC scaffolding running end-to-end.</div>
+      <div class="date">After integration</div><div class="desc">Track 4 runs load tests against the real stack and finalises the demo.</div>
+    </div>
+  </div>
+
+  <footer>
+    Update the "Owns" chips as work gets picked up — treat this as a living map, not a fixed assignment. The README currently lists three team members; add the fourth here once roles are assigned.
+  </footer>
+</div>
