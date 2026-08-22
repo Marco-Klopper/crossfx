@@ -5,13 +5,25 @@ Run locally with:
     uvicorn app.main:app --reload
 """
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
+from app.config import settings
 from app.routers import admin, auth, beneficiaries, kyc, remittances, wallet
 
 app = FastAPI(
     title="CrossFX API",
     description="Prototype cross-border FX remittance platform settling in RLUSD on XRPL Testnet.",
     version="0.1.0",
+)
+
+# Required for Track 4's browser frontend to call this API cross-origin.
+# Schema is not created here (no create_all) — that's Alembic's job; see migrations/.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
