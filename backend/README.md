@@ -31,6 +31,9 @@ Track 3's domain (remittances/cash-outs) and just happen to live in Track 1's fi
 
 ## 2. Setup
 
+Requires Python 3.10+ (`app/config.py` uses PEP 604 `str | None` union syntax, which
+doesn't parse on 3.9).
+
 ```bash
 cd backend
 python -m venv .venv
