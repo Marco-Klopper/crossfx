@@ -46,5 +46,9 @@ class Remittance(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     settled_at = Column(DateTime, nullable=True)
 
+    # Physical treasury settlement (spec 9.4) —  batched trreasury settlement; many rows may share one value.
+    treasury_batch_id = Column(String, nullable=True)
+    treasury_settled_at = Column(DateTime, nullable=True)
+
     # TODO: add cash-out sub-record (status: requested/approved/completed/failed,
     # payout currency, cash-out fee, final fiat amount)
