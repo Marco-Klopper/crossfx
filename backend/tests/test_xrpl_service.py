@@ -10,6 +10,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from xrpl.asyncio.transaction.reliable_submission import (
+    XRPLReliableSubmissionException,
+)
+
 from app.services import xrpl_service as module
 from app.services.xrpl_service import XRPLService, XRPLTransactionError
 
@@ -100,7 +104,9 @@ class TestEstablishTrustline:
         ), patch.object(
             module,
             "submit_and_wait",
-            return_value=_tx_response(tx_result="tecNO_DST"),
+            side_effect=XRPLReliableSubmissionException(
+                "Transaction failed: tecNO_DST"
+            ),
         ):
             with pytest.raises(XRPLTransactionError):
                 xrpl.establish_trustline("sSomeSeed")
@@ -122,7 +128,35 @@ class TestSendPayment:
         assert submitted.amount.issuer == ISSUER
         assert submitted.amount.currency == CURRENCY
 
-    def test_raises_on_a_failed_payment(self, xrpl):
+    def test_raises_on_a_rejected_payment(self, xrpl):
+        """
+        The real failure shape. xrpl-py's submit_and_wait *raises*
+        XRPLReliableSubmissionException when a transaction reaches a
+        validated ledger with a non-tes code — verified against
+        Testnet, where an unfunded pool produced tecPATH_DRY. The
+        service normalises it so callers catch one exception type.
+        """
+        with patch.object(
+            module.Wallet, "from_seed", return_value=_signing_wallet()
+        ), patch.object(
+            module,
+            "submit_and_wait",
+            side_effect=XRPLReliableSubmissionException(
+                "Transaction failed: tecPATH_DRY"
+            ),
+        ):
+            with pytest.raises(XRPLTransactionError) as exc_info:
+                xrpl.send_payment("sSenderSeed", "rDestination", "12.50")
+
+        # The engine code is preserved for the failed remittance.
+        assert exc_info.value.result_code == "tecPATH_DRY"
+        assert "tecPATH_DRY" in str(exc_info.value)
+
+    def test_raises_when_a_non_tes_result_is_returned_instead(self, xrpl):
+        """
+        Defensive: the same failure recorded as a returned response
+        rather than an exception must not slip through as a success.
+        """
         with patch.object(
             module.Wallet, "from_seed", return_value=_signing_wallet()
         ), patch.object(
@@ -130,8 +164,10 @@ class TestSendPayment:
             "submit_and_wait",
             return_value=_tx_response(tx_result="tecUNFUNDED_PAYMENT"),
         ):
-            with pytest.raises(XRPLTransactionError):
+            with pytest.raises(XRPLTransactionError) as exc_info:
                 xrpl.send_payment("sSenderSeed", "rDestination", "12.50")
+
+        assert exc_info.value.result_code == "tecUNFUNDED_PAYMENT"
 
 
 class TestPooledCustodyLayer:
@@ -172,7 +208,9 @@ class TestPooledCustodyLayer:
         ), patch.object(
             module,
             "submit_and_wait",
-            return_value=_tx_response(tx_result="tecPATH_DRY"),
+            side_effect=XRPLReliableSubmissionException(
+                "Transaction failed: tecPATH_DRY"
+            ),
         ):
             with pytest.raises(XRPLTransactionError):
                 xrpl.send_pooled_payment(self._pool(), "rPayoutPool", "52.5")

@@ -15,8 +15,12 @@ UCTUSD's currency code is the 40-character hex form
 characters; only 3-character ISO-style codes can be given literally.
 Anything comparing a currency code must use `self.currency_code`.
 """
+import re
 from decimal import Decimal
 
+from xrpl.asyncio.transaction.reliable_submission import (
+    XRPLReliableSubmissionException,
+)
 from xrpl.clients import JsonRpcClient
 from xrpl.models.amounts import IssuedCurrencyAmount
 from xrpl.models.requests import AccountLines, Tx
@@ -34,7 +38,26 @@ TRUSTLINE_LIMIT = "1000000000"
 
 
 class XRPLTransactionError(Exception):
-    """A submitted transaction did not settle with tesSUCCESS."""
+    """
+    A submitted transaction did not settle with tesSUCCESS.
+
+    `result_code` is the raw XRPL engine code where one could be
+    recovered (tecPATH_DRY, tecUNFUNDED_PAYMENT, ...), which is what
+    the settlement worker records on the failed remittance.
+    """
+
+    def __init__(self, message: str, result_code: str | None = None) -> None:
+        super().__init__(message)
+        self.result_code = result_code
+
+
+# XRPL engine result codes: tes (success), tec, tef, tel, tem, ter.
+_RESULT_CODE = re.compile(r"\bte[cfslmr][A-Za-z_]+\b")
+
+
+def _extract_result_code(text: str) -> str | None:
+    match = _RESULT_CODE.search(text)
+    return match.group(0) if match else None
 
 
 class XRPLService:
@@ -65,12 +88,33 @@ class XRPLService:
     def _submit(self, transaction, wallet: Wallet) -> str:
         """
         Signs, submits, and blocks until the transaction is in a
-        validated ledger. Returns its hash, or raises if it failed.
+        validated ledger. Returns its hash, or raises
+        XRPLTransactionError if the ledger rejected it.
+
+        Two failure shapes, both normalised to XRPLTransactionError so
+        callers have one thing to catch:
+
+          - xrpl-py raises XRPLReliableSubmissionException when a
+            transaction reaches a validated ledger with a non-tes
+            code. This is the path a real rejection takes — confirmed
+            against Testnet, where an unfunded pool produced
+            tecPATH_DRY.
+          - Should it instead return a response carrying a non-tes
+            TransactionResult, the check below catches that too.
         """
-        response = submit_and_wait(transaction, self.client, wallet)
+        try:
+            response = submit_and_wait(transaction, self.client, wallet)
+        except XRPLReliableSubmissionException as exc:
+            code = _extract_result_code(str(exc))
+            raise XRPLTransactionError(
+                f"XRPL transaction failed: {code or exc}", result_code=code
+            ) from exc
+
         result = response.result.get("meta", {}).get("TransactionResult")
         if result != "tesSUCCESS":
-            raise XRPLTransactionError(f"XRPL transaction failed: {result}")
+            raise XRPLTransactionError(
+                f"XRPL transaction failed: {result}", result_code=result
+            )
         return response.result["hash"]
 
     def _seed_for(self, platform_wallet) -> str:

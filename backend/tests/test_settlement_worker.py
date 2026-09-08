@@ -227,7 +227,7 @@ class TestFailureHandling:
     ):
         remittance, _sender, recipient = remittance_factory()
         xrpl.send_pooled_payment.side_effect = XRPLTransactionError(
-            "tecPATH_DRY"
+            "XRPL transaction failed: tecPATH_DRY", result_code="tecPATH_DRY"
         )
 
         worker.settle(message_for(remittance), db_session)
