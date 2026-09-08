@@ -99,7 +99,7 @@ flowchart TB
 
 The API and the settlement worker are **separate operating-system
 processes** that share only the database and the broker. This is the
-structural consequence of the brief's requirement that RLUSD transfers be
+structural consequence of the brief's requirement that UCTUSD transfers be
 processed asynchronously, and it buys three things:
 
 - **The request path never waits on XRPL.** Submitting a payment and waiting
@@ -154,7 +154,7 @@ right shape for the one component that can move funds.
 
 ## 8. Cash-In Flow
 
-## 9. RLUSD Settlement Flow
+## 9. UCTUSD Settlement Flow
 
 *Written by Track 2 (Settlement & Security).*
 
@@ -173,16 +173,16 @@ to the platform.
 This is how MoneyGram and Western Union actually operate. Neither opens a bank
 account per customer: both hold pooled, for-benefit-of corporate accounts in each
 corridor and track individual entitlements in an internal ledger, moving real value
-between institutions in bulk. Reproducing that on RLUSD/XRPL has three concrete
+between institutions in bulk. Reproducing that on UCTUSD/XRPL has three concrete
 advantages for this prototype:
 
 - **No per-user funding.** Every XRPL account needs an XRP base reserve and a
-  TrustSet before it can hold RLUSD. Per-user accounts would mean funding and
-  trust-lining an account per registration, against an RLUSD Testnet faucet capped
+  TrustSet before it can hold UCTUSD. Per-user accounts would mean funding and
+  trust-lining an account per registration, against an UCTUSD Testnet faucet capped
   around $10/24h (see `app/services/xrpl_service.py`).
 - **One custody surface.** Two seeds to protect rather than N, which is what makes
   the private-key requirements in §13 tractable rather than aspirational.
-- **Multi-currency for free.** A recipient's cash-out converts RLUSD into USD or a
+- **Multi-currency for free.** A recipient's cash-out converts UCTUSD into USD or a
   local currency. On-chain, that is a second asset to issue and trust-line; in an
   internal ledger it is another row. §9.4.
 
@@ -196,11 +196,11 @@ Pooled custody is one *model*, but it needs **two** XRPL accounts, held as the t
 
 | Pool | Corridor side | Role |
 |---|---|---|
-| `send_pool` | South Africa | Holds RLUSD liquidity; signs the outbound Payment |
-| `payout_pool` | Payout country | Receives; its balance backs recipients' RLUSD claims |
+| `send_pool` | South Africa | Holds UCTUSD liquidity; signs the outbound Payment |
+| `payout_pool` | Payout country | Receives; its balance backs recipients' UCTUSD claims |
 
 The reason is mechanical rather than stylistic. The brief requires the worker to
-submit an RLUSD transfer to XRPL per remittance, and an XRPL `Payment` must have a
+submit an UCTUSD transfer to XRPL per remittance, and an XRPL `Payment` must have a
 destination different from its account — a single platform wallet paying itself is
 rejected (`temREDUNDANT`), so it could not produce the per-transaction transaction
 hash the brief also requires the wallet to display. Two pooled accounts is the
@@ -222,7 +222,7 @@ The brief's mandated asynchronous flow, and where each step lives:
 | 1 | ZAR payment is confirmed | `routers/remittances.py::confirm_cash_in` / `routers/admin.py::confirm_zar_payment` — Track 3 |
 | 2 | A settlement message is added to the queue | `SettlementQueue.publish` |
 | 3 | A worker reads the message | `SettlementWorker.run` |
-| 4 | The worker submits the RLUSD transfer | `SettlementWorker.settle`, on-chain leg |
+| 4 | The worker submits the UCTUSD transfer | `SettlementWorker.settle`, on-chain leg |
 | 5 | Success or failure is recorded | `SettlementWorker._record_success` / `_fail` |
 | 6 | The recipient's wallet balance is updated | `Ledger.credit` |
 
@@ -233,12 +233,12 @@ In detail, per message:
    it or it has already settled — the message is skipped. §9.5.
 2. **Resolve.** The recipient user, the send pool and the payout pool are loaded.
    Anything missing fails the remittance here, before anything irreversible.
-3. **On-chain leg.** `XRPLService.send_pooled_payment` submits one RLUSD
-   `Payment`, `send_pool → payout_pool`, for the remittance's `rlusd_amount`, and
+3. **On-chain leg.** `XRPLService.send_pooled_payment` submits one UCTUSD
+   `Payment`, `send_pool → payout_pool`, for the remittance's `uctusd_amount`, and
    waits for validation. The send pool's seed is decrypted inside `xrpl_service`
    and never crosses back out; the worker holds a `PlatformWallet` row, not a key.
 4. **Ledger leg**, in a single DB transaction with the remittance stamp:
-   - credit the recipient's `RLUSD` `ledger_balances` row by `rlusd_amount`, and
+   - credit the recipient's `UCTUSD` `ledger_balances` row by `uctusd_amount`, and
      write an `incoming` `wallet_transactions` entry carrying the XRPL hash;
    - write the sender an `outgoing` `ZAR` entry — a record, not a balance move,
      because their ZAR went bank/card → send pool and was never a ledger holding
@@ -266,7 +266,7 @@ never commits — the caller owns the transaction boundary.
   history. Carries `currency`, `direction`, `status`, `xrpl_tx_hash` and
   `failure_reason`, which is exactly the set the brief requires the custodial
   wallet to display.
-- Currencies are configurable (`SUPPORTED_CURRENCIES`, default `RLUSD,USD,ZAR`);
+- Currencies are configurable (`SUPPORTED_CURRENCIES`, default `UCTUSD,USD,ZAR`);
   an unrecognised code is rejected rather than silently creating a new balance.
 - `Ledger.credit` / `Ledger.debit` move a balance; `record_external` writes an entry that moves
   none, for legs whose counterparty is outside the ledger — the sender's ZAR, and
@@ -326,8 +326,8 @@ deliberately not implemented here — per-transaction on-chain settlement is wha
 brief specifies, and it is also what makes Track 4's per-remittance XRPL timing and
 success-rate measurements meaningful.
 
-**Reconciliation.** The invariant is that the sum of every user's RLUSD
-`ledger_balances` equals the payout pool's on-chain RLUSD balance
+**Reconciliation.** The invariant is that the sum of every user's UCTUSD
+`ledger_balances` equals the payout pool's on-chain UCTUSD balance
 (`XRPLService.issued_balance`). A discrepancy means the reconciliation case
 above has occurred.
 
@@ -415,7 +415,7 @@ of this table (remittances, wallet) as those endpoints land.*
 | POST | `/admin/kyc/{id}/approve`, `/reject` | admin | Review a KYC application |
 | POST | `/admin/remittances/{id}/confirm-payment` | admin | *Admin-gated here; body implemented by Track 3* |
 | POST | `/admin/cash-outs/{id}/approve` | admin | *Admin-gated here; body implemented by Track 3* |
-| GET | `/wallet/balance` | user | RLUSD balance plus the full multi-currency ledger view (§9.4) |
+| GET | `/wallet/balance` | user | UCTUSD balance plus the full multi-currency ledger view (§9.4) |
 | GET | `/wallet/transactions` | user | Incoming/outgoing history: currency, amount, status, date, XRPL hash |
 | POST | `/wallet/cash-out` | user | *Ledger half in place; fiat payout + status record are Track 3's (§10)* |
 | — | `/remittances/*` | — | Owned by Track 3 — see their sections |
@@ -486,17 +486,20 @@ route at all (§13).
 
 *Track 2's entries; other tracks add their own below.*
 
-- **The settlement asset is UCTUSD, not Ripple's RLUSD.** Per the course
-  announcement of 2026-09-08 the class settles in a lecturer-issued Testnet IOU
-  (symbol `UCTUSD`, issuer `rELez4x4Zqv3KYqboYVfrYPF8521Ycbxa5`, currency code
-  `5543545553440000000000000000000000000000`), and the lecturer distributes liquidity
-  to each team's platform wallet on request. Functionally this changes nothing: UCTUSD
-  and RLUSD are both ordinary XRPL issued currencies, both need a TrustSet before an
-  account can hold them, and both are reached through the same code. It is configured
-  in `RLUSD_ISSUER_ADDRESS` / `RLUSD_CURRENCY_CODE`; the `rlusd_` prefixes on those
-  names are historical and switching back to real RLUSD is a `.env` change.
-  Note the 40-character hex currency code — `UCTUSD` is six characters, and only
-  3-character ISO-style codes may be given literally on XRPL.
+- **The settlement asset is UCTUSD, which is what the brief's RLUSD requirement
+  is satisfied with.** The course distributes liquidity in `UCTUSD`, a
+  lecturer-issued XRPL Testnet IOU (announcement of 2026-09-08; issuer
+  `rELez4x4Zqv3KYqboYVfrYPF8521Ycbxa5`, currency code
+  `5543545553440000000000000000000000000000`), and the brief permits a
+  "lecturer-approved test token" in place of RLUSD. This is a substitution of
+  instrument only, not of design: an issued currency on XRPL behaves identically
+  whichever it is, requiring a TrustSet before an account can hold it and moving
+  through the same `Payment` transaction. Everything in the codebase is therefore
+  named for UCTUSD, and the issuer and currency code are injected into
+  `XRPLService` from `UCTUSD_ISSUER_ADDRESS` / `UCTUSD_CURRENCY_CODE`, so the
+  settlement token can be changed without touching code. Note the 40-character hex
+  currency code — `UCTUSD` is six characters, and only 3-character ISO-style codes
+  may be given literally on XRPL.
 - **Pool liquidity is still the binding constraint on any demo.** The send pool holds
   only what the course distributor (`rsWPX7FKwnfk6enosumAzEuTs5Y12Steq4`) has sent it,
   so demo remittances must be sized against that balance rather than assumed. Each

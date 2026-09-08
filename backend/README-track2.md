@@ -2,7 +2,7 @@
 
 Operational guide for the XRPL settlement path. The *design* and its
 justification live in [`../docs/technical-specification.md`](../docs/technical-specification.md)
-§9 (RLUSD Settlement Flow) and §13 (Security Design); this file is how to run it.
+§9 (UCTUSD Settlement Flow) and §13 (Security Design); this file is how to run it.
 
 For Track 1's setup (venv, `.env`, `alembic`, admin user) see
 [`README.md`](README.md) — do that first.
@@ -54,8 +54,8 @@ Two rules the design leans on:
 Users have **no XRPL accounts**. All real value sits in two pooled corridor
 wallets (`platform_wallets`: `send_pool`, `payout_pool`), and what a user owns is
 a row per currency in `ledger_balances`. Settling one remittance does two things:
-submits a real RLUSD `Payment` from the send pool to the payout pool on XRPL
-Testnet, and credits the recipient's RLUSD claim in the internal ledger. See §9.1
+submits a real UCTUSD `Payment` from the send pool to the payout pool on XRPL
+Testnet, and credits the recipient's UCTUSD claim in the internal ledger. See §9.1
 and §9.2 for why there are two pool accounts rather than one.
 
 ## Setup, after `alembic upgrade head`
@@ -67,11 +67,11 @@ python -m scripts.init_platform_wallets
 ```
 
 Funds two Testnet accounts from the XRP faucet, submits a TrustSet from each to
-`RLUSD_ISSUER_ADDRESS`, encrypts both seeds and stores them. **It prints the seeds
+`UCTUSD_ISSUER_ADDRESS`, encrypts both seeds and stores them. **It prints the seeds
 once and never again** — save them before closing the terminal. Re-running is safe;
 existing pools are left alone.
 
-To adopt wallets you already have (e.g. a pool already funded with RLUSD):
+To adopt wallets you already have (e.g. a pool already funded with UCTUSD):
 
 ```bash
 python -m scripts.init_platform_wallets --send-pool-seed sEd... --payout-pool-seed sEd...
@@ -82,7 +82,7 @@ python -m scripts.init_platform_wallets --send-pool-seed sEd... --payout-pool-se
 **Nothing will settle until you do this.** The XRP faucet funds XRP for reserves
 and TrustSet costs only — it does not give you the settlement token.
 
-The class settles in **UCTUSD**, a lecturer-issued Testnet IOU, not Ripple's RLUSD
+The class settles in **UCTUSD**, a lecturer-issued Testnet IOU, the lecturer-issued Testnet IOU
 (course announcement, 2026-09-08). `.env.example` already carries the real values:
 
 | | |
@@ -148,10 +148,10 @@ from app.services.ledger import Ledger
 ledger = Ledger(db)
 wallet = ledger.wallet_for(user)
 
-# Cash-out: RLUSD out, fiat in. debit() raises InsufficientFundsError if the
+# Cash-out: UCTUSD out, fiat in. debit() raises InsufficientFundsError if the
 # balance won't cover it, which is the "validate sufficient balance" step
 # already done for you.
-ledger.debit(wallet, "RLUSD", Decimal("50"))
+ledger.debit(wallet, "UCTUSD", Decimal("50"))
 ledger.credit(wallet, "USD", Decimal("49.5"))
 db.commit()
 ```
