@@ -1,86 +1,177 @@
 """
-XRPL Testnet integration: account setup, TrustSet to the RLUSD issuer,
-RLUSD payment submission, and transaction validation.
+XRPL Testnet integration: account setup, trust lines, issued-currency
+payments, and transaction validation.
 
 Docs: https://xrpl.org/docs/tutorials/python/build-apps/get-started
 
-NOTE: settings.rlusd_issuer_address is a config value on purpose. The official
-RLUSD Testnet faucet is capped at ~$10/24h per wallet, so UCT may switch the class
-to a fallback IOU issuer if Ripple doesn't fund the UCT wallet in time. Swapping
-issuers must stay a one-line .env change, never a code change — don't hardcode
-the issuer address anywhere below.
+`XRPLService` is the ONLY place in the codebase that decrypts a wallet
+seed, which is the brief's private-key requirement ("only be decrypted
+by the component responsible for signing XRPL transactions"). Callers
+hand in a PlatformWallet row and get a transaction hash back; no seed
+crosses that boundary in either direction, and nothing here is logged.
+
+UCTUSD's currency code is the 40-character hex form
+(5543545553440000000000000000000000000000) because the symbol is six
+characters; only 3-character ISO-style codes can be given literally.
+Anything comparing a currency code must use `self.currency_code`.
 """
+from decimal import Decimal
+
 from xrpl.clients import JsonRpcClient
 from xrpl.models.amounts import IssuedCurrencyAmount
-from xrpl.models.requests import Tx
+from xrpl.models.requests import AccountLines, Tx
 from xrpl.models.transactions import Payment, TrustSet
 from xrpl.transaction import submit_and_wait
 from xrpl.wallet import Wallet, generate_faucet_wallet
 
 from app.config import settings
+from app.security.encryption import decrypt_seed
 
-client = JsonRpcClient(settings.xrpl_testnet_json_rpc)
-
-# A trust line limit high enough to never need raising for this prototype's volumes.
-_TRUSTLINE_LIMIT = "1000000000"
+# A trust line limit high enough never to need raising at this
+# prototype's volumes. A trust line is a cap, not a balance: setting it
+# grants no tokens.
+TRUSTLINE_LIMIT = "1000000000"
 
 
 class XRPLTransactionError(Exception):
-    """Raised when a submitted transaction doesn't settle with tesSUCCESS."""
+    """A submitted transaction did not settle with tesSUCCESS."""
 
 
-def _rlusd_amount(value: str) -> IssuedCurrencyAmount:
-    return IssuedCurrencyAmount(
-        currency=settings.rlusd_currency_code,
-        issuer=settings.rlusd_issuer_address,
-        value=value,
-    )
-
-
-def _submit_and_extract_hash(transaction, wallet: Wallet) -> str:
-    response = submit_and_wait(transaction, client, wallet)
-    tx_result = response.result.get("meta", {}).get("TransactionResult")
-    if tx_result != "tesSUCCESS":
-        raise XRPLTransactionError(f"XRPL transaction failed: {tx_result}")
-    return response.result["hash"]
-
-
-def create_testnet_account():
-    wallet = generate_faucet_wallet(client)
-    return {"address": wallet.classic_address, "seed": wallet.seed}
-
-
-def establish_rlusd_trustline(wallet_seed: str) -> str:
+class XRPLService:
     """
-    Submits a TrustSet transaction so the wallet can hold RLUSD.
-    Returns the transaction hash.
+    A connection to one XRPL node, configured for one issued currency.
     """
-    wallet = Wallet.from_seed(wallet_seed)
-    trust_set = TrustSet(
-        account=wallet.classic_address,
-        limit_amount=_rlusd_amount(_TRUSTLINE_LIMIT),
-    )
-    return _submit_and_extract_hash(trust_set, wallet)
 
+    def __init__(
+        self,
+        client: JsonRpcClient | None = None,
+        *,
+        issuer: str | None = None,
+        currency_code: str | None = None,
+    ) -> None:
+        self.client = client or JsonRpcClient(settings.xrpl_testnet_json_rpc)
+        self.issuer = issuer or settings.rlusd_issuer_address
+        self.currency_code = currency_code or settings.rlusd_currency_code
 
-def send_rlusd_payment(sender_seed: str, destination_address: str, amount: str) -> str:
-    """
-    Submits a Payment transaction denominated in RLUSD (issued currency).
-    Returns the transaction hash. Caller is responsible for validating the
-    result and handling failed-transaction cases per the brief.
-    """
-    wallet = Wallet.from_seed(sender_seed)
-    payment = Payment(
-        account=wallet.classic_address,
-        destination=destination_address,
-        amount=_rlusd_amount(amount),
-    )
-    return _submit_and_extract_hash(payment, wallet)
+    # -- internals ------------------------------------------------------
 
+    def _amount(self, value: str) -> IssuedCurrencyAmount:
+        return IssuedCurrencyAmount(
+            currency=self.currency_code,
+            issuer=self.issuer,
+            value=value,
+        )
 
-def get_transaction_status(tx_hash: str) -> str:
-    response = client.request(Tx(transaction=tx_hash))
-    result = response.result
-    if not result.get("validated", False):
-        return "pending"
-    return "success" if result["meta"]["TransactionResult"] == "tesSUCCESS" else "failed"
+    def _submit(self, transaction, wallet: Wallet) -> str:
+        """
+        Signs, submits, and blocks until the transaction is in a
+        validated ledger. Returns its hash, or raises if it failed.
+        """
+        response = submit_and_wait(transaction, self.client, wallet)
+        result = response.result.get("meta", {}).get("TransactionResult")
+        if result != "tesSUCCESS":
+            raise XRPLTransactionError(f"XRPL transaction failed: {result}")
+        return response.result["hash"]
+
+    def _seed_for(self, platform_wallet) -> str:
+        """
+        Decrypts a pooled wallet's seed. 
+        """
+        return decrypt_seed(platform_wallet.xrpl_encrypted_seed)
+
+    # -- account setup --------------------------------------------------
+
+    def create_testnet_account(self) -> dict:
+        """
+        Funds a new account from the XRP faucet. An XRPL account does
+        not exist until funded, so this has to happen before it can
+        transact or hold a trust line.
+        """
+        wallet = generate_faucet_wallet(self.client)
+        return {"address": wallet.classic_address, "seed": wallet.seed}
+
+    def establish_trustline(self, wallet_seed: str) -> str:
+        """
+        Submits a TrustSet so the wallet can hold the issued currency.
+        """
+        wallet = Wallet.from_seed(wallet_seed)
+        trust_set = TrustSet(
+            account=wallet.classic_address,
+            limit_amount=self._amount(TRUSTLINE_LIMIT),
+        )
+        return self._submit(trust_set, wallet)
+
+    def send_payment(
+        self, sender_seed: str, destination_address: str, amount: str
+    ) -> str:
+        """
+        Submits a Payment denominated in the issued currency and
+        returns its hash.
+        """
+        wallet = Wallet.from_seed(sender_seed)
+        payment = Payment(
+            account=wallet.classic_address,
+            destination=destination_address,
+            amount=self._amount(amount),
+        )
+        return self._submit(payment, wallet)
+
+    def establish_pool_trustline(self, pool) -> str:
+        """
+        TrustSet from a pooled wallet to the issuer. Both pools need
+        one — the send pool to hold liquidity, the payout pool to
+        receive it. Run once per pool at setup, never on a request path.
+        """
+        return self.establish_trustline(self._seed_for(pool))
+
+    def send_pooled_payment(
+        self, source_pool, destination_address: str, amount: str
+    ) -> str:
+        """
+        The per-remittance on-chain leg: a payment from the send-side
+        pool to the payout-side pool, submitted once per settlement
+        message by worker/settlement_worker.py.
+
+        Raises XRPLTransactionError if the transaction does not reach
+        tesSUCCESS, which the worker turns into a failed remittance
+        (the brief's "failed-transaction handling").
+        """
+        return self.send_payment(
+            self._seed_for(source_pool), destination_address, amount
+        )
+
+    # -- reads ----------------------------------------------------------
+
+    def transaction_status(self, tx_hash: str) -> str:
+        """Returns "pending", "success" or "failed"."""
+        result = self.client.request(Tx(transaction=tx_hash)).result
+        if not result.get("validated", False):
+            return "pending"
+        if result["meta"]["TransactionResult"] == "tesSUCCESS":
+            return "success"
+        return "failed"
+
+    def issued_balance(self, address: str) -> Decimal:
+        """
+        An account's holding of the issued currency, read from its
+        trust line to the issuer. Zero when no trust line exists yet.
+
+        This is the figure the internal ledger reconciles against: the
+        sum of every user's ledger balance should equal the payout
+        pool's on-chain balance (spec §9.6).
+        """
+        # peer= asks the node for only this issuer's line rather than
+        # every line on the account; ledger_index="validated" keeps the
+        # read off unvalidated state, which matters for a
+        # reconciliation figure.
+        response = self.client.request(
+            AccountLines(
+                account=address,
+                peer=self.issuer,
+                ledger_index="validated",
+            )
+        )
+        for line in response.result.get("lines", []):
+            if line.get("currency") == self.currency_code:
+                return Decimal(line["balance"])
+        return Decimal("0")

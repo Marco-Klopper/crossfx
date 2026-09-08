@@ -26,90 +26,178 @@
 
 *Written by Track 2 (Settlement & Security).*
 
-### 9.1 Custodial model: one pooled platform wallet
+### 9.1 Custodial model: pooled custody with an internal multi-currency ledger
 
-CrossFX settles through a single custodial XRPL Testnet wallet
-(`PLATFORM_WALLET_ADDRESS`/`PLATFORM_WALLET_SEED`), not a separate on-chain account per
-user. `wallets.rlusd_balance` (`app/models/wallet.py`) is the authoritative internal
-sub-ledger of what each user owns; `wallets.xrpl_address`/`xrpl_encrypted_seed` stay
-`null` for every user row — they exist in the schema only for a future per-user-account
-mode, unused here.
+The brief permits two custodial approaches: a separate XRPL Testnet account per
+user, or *"one platform wallet with customer balances maintained in an internal
+database ledger."* CrossFX implements the second.
 
-This mirrors how MoneyGram and Western Union actually operate: neither spins up a
-dedicated bank account per customer. Both hold pooled/FBO corporate accounts and track
-individual balances in an internal ledger layer, moving real money between institutions
-only in bulk. Doing the same on top of RLUSD/XRPL avoids per-user Testnet funding and
-trustline setup (the RLUSD Testnet faucet is capped at ~$10/24h per wallet — see
-`app/services/xrpl_service.py`), and it concentrates custody risk into exactly one seed
-rather than N.
+A user has **no on-chain identity at all**. `wallets` is a container row that holds
+no address, no seed and no balance; what a user owns is a row per currency in
+`ledger_balances` (`app/models/wallet.py`), and every movement of one is an
+immutable `wallet_transactions` entry. The only XRPL accounts in the system belong
+to the platform.
 
-### 9.2 Two settlement timelines
+This is how MoneyGram and Western Union actually operate. Neither opens a bank
+account per customer: both hold pooled, for-benefit-of corporate accounts in each
+corridor and track individual entitlements in an internal ledger, moving real value
+between institutions in bulk. Reproducing that on RLUSD/XRPL has three concrete
+advantages for this prototype:
 
-"Settled" happens in two different places, on two different clocks:
+- **No per-user funding.** Every XRPL account needs an XRP base reserve and a
+  TrustSet before it can hold RLUSD. Per-user accounts would mean funding and
+  trust-lining an account per registration, against an RLUSD Testnet faucet capped
+  around $10/24h (see `app/services/xrpl_service.py`).
+- **One custody surface.** Two seeds to protect rather than N, which is what makes
+  the private-key requirements in §13 tractable rather than aspirational.
+- **Multi-currency for free.** A recipient's cash-out converts RLUSD into USD or a
+  local currency. On-chain, that is a second asset to issue and trust-line; in an
+  internal ledger it is another row. §9.4.
 
-| | User-Facing Virtual Settlement | Physical Treasury Settlement |
+The cost is honest and recorded in §15: users must trust the platform's ledger,
+because there is no per-user on-chain balance for them to verify independently.
+
+### 9.2 Two corridor pools, not one account
+
+Pooled custody is one *model*, but it needs **two** XRPL accounts, held as the two
+`platform_wallets` rows (`PoolRole.SEND_POOL`, `PoolRole.PAYOUT_POOL`):
+
+| Pool | Corridor side | Role |
 |---|---|---|
-| What moves | `wallets.rlusd_balance` (a ledger row) | Real RLUSD on XRPL, platform wallet |
-| Trigger | Cash-in confirmed → settlement queue message | Periodic batch (manually triggered for this demo) |
-| Latency | Milliseconds | Hours/days in a real network; on-demand here |
-| Component | `worker/settlement_worker.py` | Treasury batch job (new, §9.4) |
-| User-visible? | Yes — this is what "settled" means to the sender/recipient | No — back-office only |
+| `send_pool` | South Africa | Holds RLUSD liquidity; signs the outbound Payment |
+| `payout_pool` | Payout country | Receives; its balance backs recipients' RLUSD claims |
 
-The recipient's balance and the `Remittance.status` the API exposes are driven entirely
-by the ledger leg. The on-chain leg happens later and separately, netted across
-whatever remittances are pending — this is what lets the product feel instant
-("clears in minutes") without an XRPL round-trip on the critical path, same as the
-netting/settlement pattern real money-transmitter networks use.
+The reason is mechanical rather than stylistic. The brief requires the worker to
+submit an RLUSD transfer to XRPL per remittance, and an XRPL `Payment` must have a
+destination different from its account — a single platform wallet paying itself is
+rejected (`temREDUNDANT`), so it could not produce the per-transaction transaction
+hash the brief also requires the wallet to display. Two pooled accounts is the
+smallest structure that satisfies both.
 
-### 9.3 User-facing virtual settlement (per remittance)
+It is also the more faithful analogue. A remittance corridor has a collection pool
+on the sending side and a disbursement pool on the receiving side; value moves
+between them, and the customer's money never crosses the border as its own
+transfer. CrossFX's inter-pool leg is a public XRPL transaction with a hash rather
+than a correspondent-banking wire — which is the entire argument for using a
+stablecoin rail.
 
-1. Track 3's cash-in confirmation (`routers/admin.py::confirm_zar_payment` or
-   `routers/remittances.py::confirm_cash_in`) publishes a settlement message to the
-   queue (`SETTLEMENT_STREAM_NAME`), keyed by `Remittance.idempotency_key`.
-2. `worker/settlement_worker.py::consume_settlement_queue` reads the message.
-3. `process_settlement_message`, in one DB transaction:
-   - Skips if `idempotency_key` was already processed (redelivery safety).
-   - Loads the `Remittance`.
-   - Credits the recipient's `wallets.rlusd_balance` by `Remittance.rlusd_amount`.
-   - Writes a `WalletTransaction` (`direction=incoming`, `status=success`).
-   - Sets `Remittance.status = SETTLED`, `settled_at = now()`.
-   - On any failure: `Remittance.status = FAILED`, no wallet credit, reason logged
-     (never the decrypted seed — there's nothing to decrypt on this path, since it
-     never calls `xrpl_service`).
+### 9.3 Settlement flow
 
-No XRPL call happens in this flow. `Remittance.xrpl_tx_hash` stays `null` until the
-treasury batch below fills it in — the recipient can already see `SETTLED` and request
-a cash-out before the corresponding on-chain movement exists.
+The brief's mandated asynchronous flow, and where each step lives:
 
-### 9.4 Physical treasury settlement (batched)
+| # | Brief step | Implementation |
+|---|---|---|
+| 1 | ZAR payment is confirmed | `routers/remittances.py::confirm_cash_in` / `routers/admin.py::confirm_zar_payment` — Track 3 |
+| 2 | A settlement message is added to the queue | `SettlementQueue.publish` |
+| 3 | A worker reads the message | `SettlementWorker.run` |
+| 4 | The worker submits the RLUSD transfer | `SettlementWorker.settle`, on-chain leg |
+| 5 | Success or failure is recorded | `SettlementWorker._record_success` / `_fail` |
+| 6 | The recipient's wallet balance is updated | `Ledger.credit` |
 
-A separate job — not on the request path, not run by `settlement_worker.py` — nets
-accumulated exposure and clears it on-chain:
+In detail, per message:
 
-1. Query `Remittance` rows where `status = SETTLED and treasury_settled_at is null`.
-2. Sum `rlusd_amount` across them (the net outstanding exposure since the last batch).
-3. Call `xrpl_service.send_rlusd_payment` once, from the platform wallet, for that net
-   amount. This is the only point in the system where the platform seed is decrypted
-   (via `app.security.encryption.decrypt_seed`) and used to sign.
-4. On `tesSUCCESS`: stamp every `Remittance` included in the batch with the same
-   `xrpl_tx_hash`, a shared `treasury_batch_id`, and `treasury_settled_at = now()`.
-   Several remittances legitimately sharing one `xrpl_tx_hash` is expected — it's the
-   on-chain evidence for a batch, not a 1:1 receipt per remittance.
-5. On failure: nothing is stamped, so the batch simply retries (or grows) next run —
-   `treasury_settled_at is null` is the retry queue, no separate failure state needed.
+1. **Claim.** A compare-and-swap moves the `Remittance` from `CASH_IN_CONFIRMED`
+   (or `QUEUED`) to `SETTLING`. If it does not match, another worker already has
+   it or it has already settled — the message is skipped. §9.5.
+2. **Resolve.** The recipient user, the send pool and the payout pool are loaded.
+   Anything missing fails the remittance here, before anything irreversible.
+3. **On-chain leg.** `XRPLService.send_pooled_payment` submits one RLUSD
+   `Payment`, `send_pool → payout_pool`, for the remittance's `rlusd_amount`, and
+   waits for validation. The send pool's seed is decrypted inside `xrpl_service`
+   and never crosses back out; the worker holds a `PlatformWallet` row, not a key.
+4. **Ledger leg**, in a single DB transaction with the remittance stamp:
+   - credit the recipient's `RLUSD` `ledger_balances` row by `rlusd_amount`, and
+     write an `incoming` `wallet_transactions` entry carrying the XRPL hash;
+   - write the sender an `outgoing` `ZAR` entry — a record, not a balance move,
+     because their ZAR went bank/card → send pool and was never a ledger holding
+     of theirs (`Ledger.record_external`);
+   - set `status = SETTLED`, `settled_at`, `xrpl_tx_hash`, and both treasury
+     columns (§9.6).
+5. **Ack.** The queue message is acknowledged only after that transaction commits.
 
-For this prototype the "schedule" is a manually-triggered CLI run during the demo,
-showing a batch of virtual-settled remittances clear together in a single Testnet
-transaction. A production version would run this on a timer (see §15).
+The recipient's balance therefore changes only after a validated on-chain payment.
+The brief's ordering — submit, record the result, then update the balance — is the
+safe ordering too: there is no window in which a user has been credited for value
+the pools have not actually moved.
 
-### 9.5 Idempotency and failure isolation
+### 9.4 The internal multi-currency ledger
 
-Two independent dedup keys, one per timeline: `idempotency_key` guards the ledger leg
-against a redelivered queue message crediting a wallet twice; `treasury_settled_at`
-guards the on-chain leg against double-submitting the same net exposure. A failure in
-one timeline never blocks or corrupts the other — a recipient's balance is correct and
-spendable the instant virtual settlement completes, independent of whether or when the
-treasury batch clears.
+`app/services/ledger.py`'s `Ledger` class is the only way a balance changes
+anywhere in the system, and it writes the balance and its audit entry together
+or not at all. It is constructed around one database session (`Ledger(db)`) and
+never commits — the caller owns the transaction boundary.
+
+- `ledger_balances` — `UNIQUE(wallet_id, currency)`. One row per currency held; the
+  balance is a rollup, not a log. `SELECT … FOR UPDATE` serialises concurrent
+  workers touching the same recipient (a no-op on SQLite, real on Postgres).
+- `wallet_transactions` — immutable entries, so any balance is reconstructible from
+  history. Carries `currency`, `direction`, `status`, `xrpl_tx_hash` and
+  `failure_reason`, which is exactly the set the brief requires the custodial
+  wallet to display.
+- Currencies are configurable (`SUPPORTED_CURRENCIES`, default `RLUSD,USD,ZAR`);
+  an unrecognised code is rejected rather than silently creating a new balance.
+- `Ledger.credit` / `Ledger.debit` move a balance; `record_external` writes an entry that moves
+  none, for legs whose counterparty is outside the ledger — the sender's ZAR, and
+  failed settlements, which the recipient should see without being credited.
+- Debits are refused below zero (`InsufficientFundsError`), which is already the
+  "validate sufficient balance" half of Track 3's cash-out (§10).
+
+Adding a payout currency is a config change, not a schema change — which is the
+practical payoff of keeping entitlements in a ledger instead of on-chain.
+
+### 9.5 Idempotency and failure handling
+
+The brief requires that duplicate messages cannot credit a recipient more than
+once. Three independent mechanisms, in order of who catches what:
+
+1. **Status compare-and-swap** (`_claim`). Only a remittance awaiting settlement
+   can be claimed, and claiming it is a single atomic `UPDATE`. A redelivered
+   message finds `SETTLING` or `SETTLED` and is skipped. This is the mechanism that
+   actually does the work: at-least-once delivery makes redelivery normal, not
+   exceptional.
+2. **`UNIQUE(remittance_id, direction, status)`** on `wallet_transactions`. If the
+   compare-and-swap were ever bypassed, a second successful credit for the same
+   remittance is a constraint violation rather than free money. `status` is part of
+   the key so a recorded failure followed by a manual retry stays representable.
+3. **`Remittance.idempotency_key`**, unique, carried by the queue message.
+
+Failure handling (brief: *"failed-transaction handling"*):
+
+- A rejected XRPL transaction — anything other than `tesSUCCESS` — raises
+  `XRPLTransactionError`, and the worker records `status = FAILED` plus a `failed`
+  entry on the recipient's wallet. No balance moves. The result code is logged; the
+  seed is not in scope at that point, so there is nothing that could leak.
+- A network error, timeout or malformed response is caught just as broadly and
+  recorded the same way. A failure is an outcome, never an exception escaping the
+  worker: an escaping exception would leave the remittance in `SETTLING` with the
+  message unacked, redelivering indefinitely.
+- The one case deliberately left unacked is a ledger write that fails *after* a
+  successful on-chain payment. The pools have moved value the ledger has not
+  recorded, so the message stays pending and the remittance stays in `SETTLING` —
+  visible, and requiring reconciliation, rather than quietly resolved either way.
+  It is the only state in the system that needs a human.
+- A worker that dies mid-settlement leaves its message pending; the next start
+  drains those via `read_pending` before taking new work, and the compare-and-swap
+  makes the replay safe.
+
+### 9.6 Treasury settlement and netting
+
+`Remittance.treasury_batch_id` and `treasury_settled_at` are stamped by the worker,
+because under this design the inter-pool Payment *is* that remittance's treasury
+settlement. The batch id is 1:1 with the payment today.
+
+The columns are not redundant. Production corridors do not clear one transaction at
+a time: they net accumulated exposure and settle it periodically, so one on-chain
+payment covers many remittances that share a `treasury_batch_id`. Keeping the
+column means enabling netting is a change to the worker, not a migration. It is
+deliberately not implemented here — per-transaction on-chain settlement is what the
+brief specifies, and it is also what makes Track 4's per-remittance XRPL timing and
+success-rate measurements meaningful.
+
+**Reconciliation.** The invariant is that the sum of every user's RLUSD
+`ledger_balances` equals the payout pool's on-chain RLUSD balance
+(`XRPLService.issued_balance`). A discrepancy means the reconciliation case
+above has occurred.
 
 ## 10. Cash-Out Flow
 
@@ -122,13 +210,21 @@ treasury batch clears.
 
 ```
 users ──┬──< kyc_applications  (user_id FK; reviewed_by_admin_id FK, nullable)
-        └──< beneficiaries     (sender_id FK; unique on (sender_id, contact))
+        ├──< beneficiaries     (sender_id FK; unique on (sender_id, contact))
+        ├──< remittances        (sender_id FK; beneficiary_id FK)
+        └──── wallets           (user_id FK, unique — one wallet per user)
+                  ├──< ledger_balances      (wallet_id FK; unique on (wallet_id, currency))
+                  └──< wallet_transactions  (wallet_id FK; remittance_id FK, nullable)
+
+platform_wallets   (standalone — the two pooled XRPL corridor accounts, no user FK)
 ```
 
-Tracks 2 and 3 add `wallets` / `wallet_transactions` (one-to-one and one-to-many off
-`users`) and `remittances` (many-to-one off both `users` and `beneficiaries`) —
-included in the same initial migration for a single shared baseline, but designed and
-owned by those tracks.
+Track 3 owns `remittances` (many-to-one off both `users` and `beneficiaries`). Track 2
+owns the wallet chain and `platform_wallets`: `wallets` and `wallet_transactions` were
+part of the initial migration for a single shared baseline, and `ledger_balances` /
+`platform_wallets` arrived with the move to pooled custody (§9.1) in migration
+`f20b2cb74a0f`, which also stripped `wallets` down to a container — a user has no
+balance column and no on-chain identity. See §9.4 for the ledger's design.
 
 ### Tables (Track 1's four)
 
@@ -187,27 +283,42 @@ of this table (remittances, wallet) as those endpoints land.*
 | POST | `/admin/kyc/{id}/approve`, `/reject` | admin | Review a KYC application |
 | POST | `/admin/remittances/{id}/confirm-payment` | admin | *Admin-gated here; body implemented by Track 3* |
 | POST | `/admin/cash-outs/{id}/approve` | admin | *Admin-gated here; body implemented by Track 3* |
-| — | `/remittances/*`, `/wallet/*` | — | Owned by Tracks 2/3 — see their sections |
+| GET | `/wallet/balance` | user | RLUSD balance plus the full multi-currency ledger view (§9.4) |
+| GET | `/wallet/transactions` | user | Incoming/outgoing history: currency, amount, status, date, XRPL hash |
+| POST | `/wallet/cash-out` | user | *Ledger half in place; fiat payout + status record are Track 3's (§10)* |
+| — | `/remittances/*` | — | Owned by Track 3 — see their sections |
+
+`platform_wallets` is deliberately absent from this table: it is reachable from no
+route at all (§13).
 
 ## 13. Security Design
 
 - **Password hashing:** bcrypt via `passlib` (`app/security/hashing.py`).
-- **Private key encryption at rest**, key stored separately from the DB — see Track 2's
-  section for the wallet-seed specifics; the mechanism (`app/security/encryption.py`,
-  Fernet) is already in place.
-- **Custodial wallet approach: one pooled platform wallet**, not a per-user XRPL
-  account — see §9.1 for the full justification (matches the MoneyGram/Western Union
-  pattern of pooled/FBO accounts plus an internal ledger). This concentrates custody
-  risk into exactly one seed rather than N: compromise of the platform seed threatens
-  every user's funds, so it is decrypted (`app.security.encryption.decrypt_seed`) in
-  exactly one place in the codebase — the treasury batch job (§9.4) — and never on a
-  per-request or per-user-action path, minimising both decrypt frequency and blast
-  radius.
-- **Decoupled settlement timelines** (§9.2) as a security boundary, not just a
-  performance one: the user-facing ledger credit (`worker/settlement_worker.py`) never
-  touches the platform seed or `xrpl_service`, so a bug or compromise in the
-  high-traffic per-remittance path cannot reach the one component authorised to move
-  real funds on-chain.
+- **No per-user key material at all.** Pooled custody (§9.1) means users have no XRPL
+  accounts, so there are no per-user seeds to store, encrypt, rotate or leak. The
+  entire private-key attack surface is two rows in `platform_wallets`. The trade-off
+  is concentration rather than reduction — compromise of the send pool's seed threatens
+  the pooled liquidity — which is what the next three controls are for.
+- **Private-key encryption at rest.** Both pool seeds are stored as Fernet ciphertext
+  (`app/security/encryption.py`) in `platform_wallets.xrpl_encrypted_seed`. The key
+  lives in `PRIVATE_KEY_ENCRYPTION_KEY` (`.env`, and a secrets manager in anything
+  beyond an academic prototype) and never in the database holding the ciphertext, which
+  is the brief's explicit requirement. Note the ordering this forces: the seeds are
+  generated by `scripts/init_platform_wallets.py`, printed once, and encrypted before
+  they are ever persisted — there is no point at which a plaintext seed sits in the DB
+  waiting to be encrypted, and none in `.env` either.
+- **Decryption happens in exactly one module.** `app/services/xrpl_service.py` is the
+  signing component, and `_seed_for()` is the only call to `decrypt_seed` in the
+  codebase — the brief's *"only be decrypted by the component responsible for signing
+  XRPL transactions"*, arranged so it is checkable by grep rather than by trust.
+  Callers, including the settlement worker, pass a `PlatformWallet` row in and get a
+  transaction hash back; no seed crosses that boundary in either direction. A test
+  asserts the worker never passes a seed string (`tests/test_settlement_worker.py`).
+- **No route can reach a seed.** `platform_wallets` is not exposed by any router, and
+  the wallet schemas (`app/schemas/wallet.py`) contain no address or seed field — under
+  pooled custody there is nothing per-user to expose. Seeds are never logged: the
+  worker's failure path records XRPL result codes and internal messages only, and
+  operates outside the scope where a decrypted seed exists.
 - **Authentication:** stateless JWTs (`HS256`), 60-minute expiry, `sub`/`iat`/`exp`
   claims only. No refresh tokens and no server-side revocation — a limitation, recorded
   in §15, not hidden.
@@ -240,3 +351,43 @@ of this table (remittances, wallet) as those endpoints land.*
 - Licensing considerations for a real remittance service (e.g. FSCA, NPS Act, Reserve Bank authorisation)
 
 ## 15. Assumptions and Limitations
+
+*Track 2's entries; other tracks add their own below.*
+
+- **The settlement asset is UCTUSD, not Ripple's RLUSD.** Per the course
+  announcement of 2026-09-08 the class settles in a lecturer-issued Testnet IOU
+  (symbol `UCTUSD`, issuer `rELez4x4Zqv3KYqboYVfrYPF8521Ycbxa5`, currency code
+  `5543545553440000000000000000000000000000`), and the lecturer distributes liquidity
+  to each team's platform wallet on request. Functionally this changes nothing: UCTUSD
+  and RLUSD are both ordinary XRPL issued currencies, both need a TrustSet before an
+  account can hold them, and both are reached through the same code. It is configured
+  in `RLUSD_ISSUER_ADDRESS` / `RLUSD_CURRENCY_CODE`; the `rlusd_` prefixes on those
+  names are historical and switching back to real RLUSD is a `.env` change.
+  Note the 40-character hex currency code — `UCTUSD` is six characters, and only
+  3-character ISO-style codes may be given literally on XRPL.
+- **Pool liquidity is still the binding constraint on any demo.** The send pool holds
+  only what the course distributor (`rsWPX7FKwnfk6enosumAzEuTs5Y12Steq4`) has sent it,
+  so demo remittances must be sized against that balance rather than assumed. Each
+  TrustSet also locks 1 XRP of the signing account's reserve, which the XRP faucet
+  covers.
+- **Users must trust the internal ledger.** This is the inherent cost of pooled
+  custody (§9.1): a recipient cannot independently verify their own balance on-chain,
+  because their entitlement is a database row. The mitigation is the reconciliation
+  invariant in §9.6, not cryptographic proof.
+- **The recipient is matched to a beneficiary by email.** `Beneficiary.contact` is
+  matched against `User.email` to decide whose wallet to credit
+  (`settlement_worker._resolve_recipient`). A beneficiary who has not registered yet
+  cannot be credited, and one who registered under a different address than the sender
+  typed will not be found — in both cases the remittance fails cleanly rather than
+  crediting the wrong person. The fix is a nullable `recipient_user_id` FK on
+  `beneficiaries` (Track 1's file).
+- **Netting is designed but not implemented.** Settlement is one on-chain payment per
+  remittance, per the brief. Production corridors net; see §9.6 for why the columns
+  exist anyway.
+- **One reconciliation state needs a human.** A ledger write that fails after a
+  successful on-chain payment leaves a remittance in `SETTLING` with its queue message
+  unacked (§9.5). There is no automated repair for it.
+- **No refresh tokens and no server-side JWT revocation** (§13) — a logged-out token
+  stays valid until it expires.
+- **KYC PII is not encrypted at rest** (§13, §14) — identification numbers and
+  addresses are plain columns.

@@ -9,11 +9,20 @@ from app.models.beneficiary import Beneficiary
 from app.models.kyc import KYCApplication
 from app.models.remittance import Remittance
 from app.models.user import User
-from app.models.wallet import Wallet, WalletTransaction
+from app.models.wallet import (
+    LedgerBalance,
+    PlatformWallet,
+    PoolRole,
+    Wallet,
+    WalletTransaction,
+)
 
 __all__ = [
     "Beneficiary",
     "KYCApplication",
+    "LedgerBalance",
+    "PlatformWallet",
+    "PoolRole",
     "Remittance",
     "User",
     "Wallet",

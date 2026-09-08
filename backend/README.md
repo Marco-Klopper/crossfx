@@ -85,6 +85,10 @@ uvicorn app.main:app --reload
 python -m scripts.create_admin --email admin@example.com --password adminpass123
 ```
 
+That is everything Track 1's endpoints need. Bringing the *settlement* path up as
+well (pooled wallets, Redis, the worker) is covered in
+[`README-track2.md`](README-track2.md).
+
 Open `http://127.0.0.1:8000/docs`. Click **Authorize**, log in with the admin
 credentials above (that form posts to `/auth/token`, a thin Swagger-only shim over the
 same check `/login` uses), and every endpoint becomes clickable.
