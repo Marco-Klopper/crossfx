@@ -20,6 +20,138 @@
 
 ## 7. Architecture Diagram
 
+*Diagram and component inventory by Track 2; §7 is Track 4's section to own
+and extend (see `docs/work-split.html`).*
+
+```mermaid
+flowchart TB
+    UI["Web front end<br/>browser SPA"]
+
+    subgraph apiproc["API process - uvicorn app.main:app"]
+        REST["REST API<br/>FastAPI, OpenAPI at /docs"]
+        IDENT["User, KYC and beneficiary module<br/>routers/auth.py, kyc.py, beneficiaries.py"]
+        REMIT["Remittance and fee module<br/>routers/remittances.py, services/fee_service.py"]
+        WALLET["Wallet and transaction module<br/>routers/wallet.py, services/ledger.py"]
+        ADMIN["Administrator interface<br/>routers/admin.py"]
+        RATES["Exchange-rate service<br/>services/fx_rate_service.py"]
+        CASH["Mock cash-in and cash-out services<br/>services/cashin_cashout_service.py"]
+    end
+
+    QUEUE[("Message broker<br/>Redis Streams, consumer group")]
+
+    subgraph workerproc["Worker process - python -m worker.settlement_worker"]
+        SETTLE["XRPL settlement worker<br/>SettlementWorker"]
+        LEDGER["Internal multi-currency ledger<br/>Ledger"]
+        SIGNER["XRPL client and signer<br/>XRPLService"]
+    end
+
+    DB[("Relational database<br/>PostgreSQL, SQLite in dev")]
+
+    subgraph testnet["XRPL Testnet - external"]
+        SENDPOOL["Send pool<br/>platform account"]
+        PAYPOOL["Payout pool<br/>platform account"]
+        ISSUER["UCTUSD issuer"]
+    end
+
+    UI -->|"HTTPS, JSON"| REST
+    REST --> IDENT
+    REST --> REMIT
+    REST --> WALLET
+    REST --> ADMIN
+    REMIT --> RATES
+    REMIT --> CASH
+    ADMIN --> CASH
+
+    IDENT --> DB
+    REMIT --> DB
+    WALLET --> DB
+    ADMIN --> DB
+
+    CASH -->|"cash-in confirmed:<br/>publish settlement message"| QUEUE
+    QUEUE -->|"XREADGROUP, at-least-once"| SETTLE
+    SETTLE --> LEDGER
+    LEDGER --> DB
+    SETTLE -->|"status, tx hash"| DB
+    SETTLE --> SIGNER
+    SIGNER -->|"Payment in UCTUSD"| SENDPOOL
+    SENDPOOL ==>|"value moves on-chain"| PAYPOOL
+    SENDPOOL -.->|"TrustSet, once at setup"| ISSUER
+    PAYPOOL -.->|"TrustSet, once at setup"| ISSUER
+```
+
+### 7.1 Component inventory
+
+| Brief component | Implementation | Track | State |
+|---|---|---|---|
+| Web front end | `frontend/` | 4 | Not started |
+| REST API | `app/main.py` (FastAPI, CORS, `/docs`) | 1 | Done |
+| Relational database | PostgreSQL; SQLite for dev and CI | 1 | Done |
+| User and KYC module | `routers/auth.py`, `kyc.py`, `beneficiaries.py`, `models/user.py`, `kyc.py`, `beneficiary.py` | 1 | Done |
+| Remittance and fee module | `routers/remittances.py`, `services/fee_service.py`, `models/remittance.py` | 3 | Fee math done; endpoints outstanding |
+| Wallet and transaction module | `routers/wallet.py`, `services/ledger.py`, `models/wallet.py` | 2 | Balance and history done; cash-out awaits Track 3 |
+| Exchange-rate service | `services/fx_rate_service.py` | 3 | Mock returns a fixed rate; API and table modes outstanding |
+| Message broker | Redis Streams via `services/settlement_queue.py` | 2 | Done |
+| XRPL settlement worker | `worker/settlement_worker.py` | 2 | Done |
+| Mock cash-in and cash-out services | `services/cashin_cashout_service.py` | 3 | Not started |
+| Administrator interface | `routers/admin.py` | 1 | KYC review done; two bodies await Track 3 |
+
+### 7.2 Two processes, one database
+
+The API and the settlement worker are **separate operating-system
+processes** that share only the database and the broker. This is the
+structural consequence of the brief's requirement that RLUSD transfers be
+processed asynchronously, and it buys three things:
+
+- **The request path never waits on XRPL.** Submitting a payment and waiting
+  for a validated ledger takes seconds. A user confirming cash-in gets an
+  immediate response; settlement happens behind the queue.
+- **They scale independently.** The API is I/O-light per request; the worker
+  is dominated by one blocking network round-trip. Several workers can share
+  the consumer group, which is what makes Track 4's queue-throughput
+  measurement meaningful rather than a measurement of one process.
+- **Failure is isolated.** A crashed worker leaves the API serving; its
+  unacked messages are replayed when it restarts (§9.5). A crashed API leaves
+  in-flight settlements to complete.
+
+The queue is therefore not an optimisation bolted on — it is the boundary the
+system is built around.
+
+### 7.3 Trust boundaries
+
+Three boundaries matter, marked by where secrets are allowed to exist:
+
+1. **Browser to API.** Stateless JWTs over HTTPS; passwords are bcrypt-hashed
+   and never returned. No secret the client holds can move funds.
+2. **API to XRPL.** There isn't one — deliberately. No route in the API
+   process can reach a wallet seed, because the only component that decrypts
+   one is `XRPLService`, which lives in the worker process (§13). Compromising
+   the public API therefore does not reach the signing path.
+3. **Application to database.** `platform_wallets` holds the two pool seeds as
+   Fernet ciphertext, and `PRIVATE_KEY_ENCRYPTION_KEY` lives outside the
+   database. A database dump alone yields no usable key.
+
+Note what users are *not*: they have no XRPL accounts and no key material at
+all (§9.1), so the entire private-key attack surface is two rows.
+
+### 7.4 Technology choices
+
+| Choice | Why |
+|---|---|
+| FastAPI | Brief permits Flask, Django or FastAPI. Pydantic gives request and response validation from type hints, and the OpenAPI `/docs` the brief asks for comes free — which is also how the demo is driven without a finished frontend. |
+| PostgreSQL, SQLite in dev | Models use the portable `sqlalchemy.Uuid`, so identical models and migrations run against either. Local development and the test suite need no infrastructure; a deployment points `DATABASE_URL` at Postgres. |
+| Alembic | Schema is versioned rather than created by `create_all`, so a schema change is reviewable and reversible. `tests/test_migrations.py` asserts the migration chain matches the models column-for-column. |
+| Redis Streams | Of the brokers the brief names, the lightest to run while still providing consumer groups, at-least-once delivery and a pending-entries list — the three properties settlement actually needs. Kafka's ordering and retention guarantees are not needed here. |
+| `xrpl-py` | The official Python SDK. `submit_and_wait` autofills fee and sequence, signs, submits and blocks until the transaction is in a validated ledger, which is exactly the "submission and validation" pairing the brief asks to be demonstrated. |
+
+### 7.5 Deployment shape
+
+For the demo everything runs locally: one uvicorn process, one worker process,
+one Redis container, one database. The two processes are already separate
+programs with no shared memory, so a cloud deployment (Render or Railway, per
+the brief) is two services against a managed Postgres and a managed Redis,
+with no code change. The worker needs no inbound network access, which is the
+right shape for the one component that can move funds.
+
 ## 8. Cash-In Flow
 
 ## 9. RLUSD Settlement Flow
