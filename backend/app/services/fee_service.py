@@ -2,7 +2,7 @@
 Fee and quotation math. All rates/fees are configurable via app.config.settings.
 
 Quotation must surface: ZAR send amount, exchange rate, transaction fee,
-FX margin, RLUSD amount to be received, cash-out fee, estimated payout.
+FX margin, UCTUSD amount to be received, cash-out fee, estimated payout.
 """
 from decimal import Decimal
 from dataclasses import dataclass
@@ -17,7 +17,7 @@ class Quote:
     transaction_fee_zar: Decimal
     fx_margin_zar: Decimal
     net_converted_zar: Decimal
-    rlusd_amount: Decimal
+    uctusd_amount: Decimal
 
 
 def calculate_quote(zar_send_amount: Decimal, usd_zar_rate: Decimal) -> Quote:
@@ -28,7 +28,7 @@ def calculate_quote(zar_send_amount: Decimal, usd_zar_rate: Decimal) -> Quote:
 
     net_converted_zar = zar_send_amount - transaction_fee - fx_margin
     effective_rate = usd_zar_rate * (1 + Decimal(settings.fx_margin_bps) / Decimal(10_000))
-    rlusd_amount = net_converted_zar / effective_rate
+    uctusd_amount = net_converted_zar / effective_rate
 
     return Quote(
         zar_send_amount=zar_send_amount,
@@ -36,11 +36,11 @@ def calculate_quote(zar_send_amount: Decimal, usd_zar_rate: Decimal) -> Quote:
         transaction_fee_zar=transaction_fee,
         fx_margin_zar=fx_margin,
         net_converted_zar=net_converted_zar,
-        rlusd_amount=rlusd_amount,
+        uctusd_amount=uctusd_amount,
     )
 
 
-def calculate_cash_out_payout(rlusd_amount: Decimal, usd_zar_rate: Decimal) -> Decimal:
+def calculate_cash_out_payout(uctusd_amount: Decimal, usd_zar_rate: Decimal) -> Decimal:
     # TODO: apply settings.cashout_fee_bps and return fiat payout amount
     raise NotImplementedError
 

@@ -40,25 +40,25 @@ class TestWallets:
 
 class TestCredits:
     def test_creates_balance_row_and_entry(self, ledger, db_session, wallet):
-        ledger.credit(wallet, "RLUSD", Decimal("25.5"))
+        ledger.credit(wallet, "UCTUSD", Decimal("25.5"))
         db_session.commit()
 
-        assert ledger.balance(wallet, "RLUSD") == Decimal("25.5")
+        assert ledger.balance(wallet, "UCTUSD") == Decimal("25.5")
         assert db_session.query(WalletTransaction).count() == 1
 
     def test_credits_accumulate(self, ledger, db_session, wallet):
         for _ in range(3):
-            ledger.credit(wallet, "RLUSD", Decimal("10"))
+            ledger.credit(wallet, "UCTUSD", Decimal("10"))
         db_session.commit()
 
-        assert ledger.balance(wallet, "RLUSD") == Decimal("30")
+        assert ledger.balance(wallet, "UCTUSD") == Decimal("30")
         # One balance row, three entries: a rollup, not a log.
         assert db_session.query(LedgerBalance).count() == 1
         assert db_session.query(WalletTransaction).count() == 3
 
     def test_entry_carries_the_xrpl_hash(self, ledger, db_session, wallet):
         ledger.credit(
-            wallet, "RLUSD", Decimal("7"), xrpl_tx_hash="ABCDEF123"
+            wallet, "UCTUSD", Decimal("7"), xrpl_tx_hash="ABCDEF123"
         )
         db_session.commit()
 
@@ -70,18 +70,18 @@ class TestCredits:
 
 class TestMultiCurrency:
     def test_currencies_are_independent(self, ledger, db_session, wallet):
-        ledger.credit(wallet, "RLUSD", Decimal("100"))
+        ledger.credit(wallet, "UCTUSD", Decimal("100"))
         ledger.credit(wallet, "ZAR", Decimal("2000"))
         db_session.commit()
 
-        assert ledger.balance(wallet, "RLUSD") == Decimal("100")
+        assert ledger.balance(wallet, "UCTUSD") == Decimal("100")
         assert ledger.balance(wallet, "ZAR") == Decimal("2000")
         assert ledger.balance(wallet, "USD") == Decimal("0")
 
     def test_balances_pads_unheld_currencies_with_zero(
         self, ledger, db_session, wallet
     ):
-        ledger.credit(wallet, "RLUSD", Decimal("3"))
+        ledger.credit(wallet, "UCTUSD", Decimal("3"))
         db_session.commit()
 
         rows = {
@@ -89,7 +89,7 @@ class TestMultiCurrency:
             for row in ledger.balances(wallet)
         }
         assert rows == {
-            "RLUSD": Decimal("3"),
+            "UCTUSD": Decimal("3"),
             "USD": Decimal("0"),
             "ZAR": Decimal("0"),
         }
@@ -97,17 +97,17 @@ class TestMultiCurrency:
 
 class TestDebits:
     def test_reduces_balance(self, ledger, db_session, wallet):
-        ledger.credit(wallet, "RLUSD", Decimal("50"))
-        ledger.debit(wallet, "RLUSD", Decimal("20"))
+        ledger.credit(wallet, "UCTUSD", Decimal("50"))
+        ledger.debit(wallet, "UCTUSD", Decimal("20"))
         db_session.commit()
 
-        assert ledger.balance(wallet, "RLUSD") == Decimal("30")
+        assert ledger.balance(wallet, "UCTUSD") == Decimal("30")
 
     def test_beyond_balance_is_refused(self, ledger, wallet):
         """This is the "validate sufficient balance" step of cash-out."""
-        ledger.credit(wallet, "RLUSD", Decimal("5"))
+        ledger.credit(wallet, "UCTUSD", Decimal("5"))
         with pytest.raises(InsufficientFundsError):
-            ledger.debit(wallet, "RLUSD", Decimal("6"))
+            ledger.debit(wallet, "UCTUSD", Decimal("6"))
 
     def test_of_a_never_held_currency_is_refused(self, ledger, wallet):
         with pytest.raises(InsufficientFundsError):
@@ -120,14 +120,14 @@ class TestValidation:
             ledger.credit(wallet, "BTC", Decimal("1"))
 
     def test_currency_codes_are_normalised(self, ledger, db_session, wallet):
-        ledger.credit(wallet, " rlusd ", Decimal("1"))
+        ledger.credit(wallet, " uctusd ", Decimal("1"))
         db_session.commit()
-        assert ledger.balance(wallet, "RLUSD") == Decimal("1")
+        assert ledger.balance(wallet, "UCTUSD") == Decimal("1")
 
     @pytest.mark.parametrize("amount", [Decimal("0"), Decimal("-1")])
     def test_non_positive_amounts_are_refused(self, ledger, wallet, amount):
         with pytest.raises(LedgerError):
-            ledger.credit(wallet, "RLUSD", amount)
+            ledger.credit(wallet, "UCTUSD", amount)
 
     def test_a_bare_string_direction_is_refused(self, ledger, wallet):
         """
@@ -136,7 +136,7 @@ class TestValidation:
         """
         with pytest.raises(LedgerError):
             ledger.record_external(
-                wallet, "sideways", "RLUSD", Decimal("1")
+                wallet, "sideways", "UCTUSD", Decimal("1")
             )
 
 
@@ -162,14 +162,14 @@ class TestExternalLegs:
         ledger.record_external(
             wallet,
             Direction.INCOMING,
-            "RLUSD",
+            "UCTUSD",
             Decimal("99"),
             status=EntryStatus.FAILED,
             failure_reason="tecUNFUNDED_PAYMENT",
         )
         db_session.commit()
 
-        assert ledger.balance(wallet, "RLUSD") == Decimal("0")
+        assert ledger.balance(wallet, "UCTUSD") == Decimal("0")
         entry = db_session.query(WalletTransaction).one()
         assert entry.status == EntryStatus.FAILED.value
         assert entry.failure_reason == "tecUNFUNDED_PAYMENT"

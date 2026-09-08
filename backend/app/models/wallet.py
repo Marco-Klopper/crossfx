@@ -2,7 +2,7 @@
 Pooled-custody wallet model.
 
 CrossFX runs the second of the two custodial approaches the project
-brief permits ("Custodial RLUSD Wallet"): *one platform wallet with
+brief's custodial-wallet section permits: *one platform wallet with
 customer balances maintained in an internal database ledger*, rather
 than a separate XRPL Testnet account per user. See
 docs/technical-specification.md §9.1 for the justification.
@@ -91,7 +91,7 @@ class LedgerBalance(Base):
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     wallet_id = Column(Uuid, ForeignKey("wallets.id"), nullable=False)
 
-    # RLUSD | USD | ZAR | ... (settings.supported_currencies)
+    # UCTUSD | USD | ZAR | ... (settings.supported_currencies)
     currency = Column(String, nullable=False)
     amount = Column(Numeric(18, 6), default=0, nullable=False)
 

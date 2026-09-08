@@ -1,5 +1,5 @@
 """
-A single remittance transaction: ZAR in, RLUSD settled to the recipient's wallet.
+A single remittance transaction: ZAR in, UCTUSD settled to the recipient's wallet.
 
 Status flow (roughly):
   quoted -> cash_in_confirmed -> queued -> settling -> settled -> (cashed_out) | failed
@@ -36,7 +36,7 @@ class Remittance(Base):
     transaction_fee_zar = Column(Numeric(12, 2), nullable=False)
     fx_margin_zar = Column(Numeric(12, 2), nullable=False)
     net_converted_zar = Column(Numeric(12, 2), nullable=False)
-    rlusd_amount = Column(Numeric(18, 6), nullable=False)
+    uctusd_amount = Column(Numeric(18, 6), nullable=False)
 
     status = Column(Enum(RemittanceStatus), default=RemittanceStatus.QUOTED, nullable=False)
 

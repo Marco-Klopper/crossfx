@@ -7,9 +7,9 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 # Small allowlist rather than a free-text field: the brief scopes this prototype
-# to RLUSD-denominated payouts and a couple of familiar fiat currencies for the
+# to UCTUSD-denominated payouts and a couple of familiar fiat currencies for the
 # simulated cash-out. Extend here if Track 3's cash-out flow needs more.
-ALLOWED_PAYOUT_CURRENCIES = {"RLUSD", "USD", "ZAR", "EUR", "GBP"}
+ALLOWED_PAYOUT_CURRENCIES = {"UCTUSD", "USD", "ZAR", "EUR", "GBP"}
 
 
 class BeneficiaryCreate(BaseModel):

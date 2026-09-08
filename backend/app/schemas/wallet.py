@@ -1,9 +1,10 @@
 """
 Request/response shapes for routers/wallet.py.
 
-Covers the brief's custodial-wallet display requirements: available RLUSD
-balance, incoming transfers, outgoing/cash-out transactions, transaction
-status, transaction date, and the XRP Ledger transaction hash.
+Covers the brief's custodial-wallet display requirements: available
+settlement-token balance, incoming transfers, outgoing and cash-out
+transactions, transaction status, transaction date, and the XRP Ledger
+transaction hash.
 """
 import uuid
 from datetime import datetime
@@ -20,11 +21,12 @@ class LedgerBalanceRead(BaseModel):
 
 
 class WalletBalanceRead(BaseModel):
-    # `rlusd_balance` is redundant with the RLUSD entry in `balances`, and is
-    # kept because it is the one figure the brief names explicitly and the one
-    # the recipient UI leads with. `balances` is the full multi-currency view
-    # the internal ledger actually holds (RLUSD now, fiat after a cash-out).
-    rlusd_balance: Decimal
+    # Redundant with the UCTUSD entry in `balances`, and kept because
+    # the available settlement-token balance is the figure the brief
+    # names explicitly and the one the recipient UI leads with.
+    # `balances` is the full multi-currency view the ledger holds:
+    # UCTUSD now, fiat after a cash-out.
+    uctusd_balance: Decimal
     balances: list[LedgerBalanceRead]
 
 

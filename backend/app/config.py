@@ -26,11 +26,16 @@ class Settings(BaseSettings):
     # Private key encryption — key must live outside the DB that stores the encrypted keys.
     private_key_encryption_key: str
 
-    # XRPL Testnet
+    # XRPL Testnet. The settlement asset is UCTUSD, the lecturer-issued
+    # Testnet IOU (course announcement, 2026-09-08). Both values are
+    # config, not constants, so the settlement token can be changed
+    # without touching code. The currency code is the 40-character hex
+    # form because "UCTUSD" is six characters; only 3-character
+    # ISO-style codes may be given literally on XRPL.
     xrpl_testnet_json_rpc: str = "https://s.altnet.rippletest.net:51234"
     xrpl_testnet_wss: str = "wss://s.altnet.rippletest.net:51233"
-    rlusd_issuer_address: str
-    rlusd_currency_code: str = "USD"
+    uctusd_issuer_address: str
+    uctusd_currency_code: str = "5543545553440000000000000000000000000000"
 
     # Pooled custody (spec §9.1): the two corridor pool accounts are
     # rows in the platform_wallets table, not env vars — their seeds
@@ -39,7 +44,7 @@ class Settings(BaseSettings):
     #     python -m scripts.init_platform_wallets
 
     # Ledger currencies the internal multi-currency ledger will accept.
-    supported_currencies: str = "RLUSD,USD,ZAR"
+    supported_currencies: str = "UCTUSD,USD,ZAR"
 
     # FX / fees
     exchange_rate_source: str = "mock"

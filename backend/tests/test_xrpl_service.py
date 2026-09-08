@@ -57,13 +57,13 @@ def _signing_wallet(address="rFakeSenderAddress"):
 class TestConfiguration:
     def test_defaults_come_from_settings(self):
         service = XRPLService(MagicMock())
-        assert service.issuer == module.settings.rlusd_issuer_address
-        assert service.currency_code == module.settings.rlusd_currency_code
+        assert service.issuer == module.settings.uctusd_issuer_address
+        assert service.currency_code == module.settings.uctusd_currency_code
 
     def test_issuer_and_currency_are_overridable(self, xrpl):
         """
-        Switching tokens (RLUSD <-> UCTUSD) must never need a code
-        change — see the module docstring.
+        Changing the settlement token must never need a code change
+        — see the module docstring.
         """
         assert xrpl.issuer == ISSUER
         assert xrpl.currency_code == CURRENCY

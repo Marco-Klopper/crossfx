@@ -10,6 +10,11 @@ by the component responsible for signing XRPL transactions"). Callers
 hand in a PlatformWallet row and get a transaction hash back; no seed
 crosses that boundary in either direction, and nothing here is logged.
 
+NOTE on the settlement asset. The class settles in UCTUSD, a
+lecturer-issued Testnet IOU (course announcement, 2026-09-08). Nothing
+in this module is token-specific: the issuer and currency code are
+injected, so changing the settlement token is a .env change.
+
 UCTUSD's currency code is the 40-character hex form
 (5543545553440000000000000000000000000000) because the symbol is six
 characters; only 3-character ISO-style codes can be given literally.
@@ -73,8 +78,8 @@ class XRPLService:
         currency_code: str | None = None,
     ) -> None:
         self.client = client or JsonRpcClient(settings.xrpl_testnet_json_rpc)
-        self.issuer = issuer or settings.rlusd_issuer_address
-        self.currency_code = currency_code or settings.rlusd_currency_code
+        self.issuer = issuer or settings.uctusd_issuer_address
+        self.currency_code = currency_code or settings.uctusd_currency_code
 
     # -- internals ------------------------------------------------------
 

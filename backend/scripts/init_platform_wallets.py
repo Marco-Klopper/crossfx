@@ -5,11 +5,11 @@ from backend/, after `alembic upgrade head`:
     python -m scripts.init_platform_wallets
 
 By default this funds two fresh XRPL Testnet accounts from the XRP faucet,
-submits a TrustSet from each to the RLUSD issuer, encrypts both seeds and
+submits a TrustSet from each to the UCTUSD issuer, encrypts both seeds and
 stores them as `platform_wallets` rows. Re-running it leaves existing pools
 alone, so it is safe to run again after adding a migration.
 
-To adopt wallets you already have (e.g. a pool that has been funded with RLUSD
+To adopt wallets you already have (e.g. a pool already funded with UCTUSD
 and you don't want to re-fund):
 
     python -m scripts.init_platform_wallets \
@@ -76,7 +76,7 @@ def _create_pool(
     db.flush()
 
     if not skip_trustline:
-        # RLUSD is an issued token, so a pool cannot hold it without a trust
+        # UCTUSD is an issued token, so a pool cannot hold it without a
         # line. Both pools need one: the send pool to hold
         # liquidity, the payout pool to receive it.
         print(f"{role.value}: submitting TrustSet to {xrpl.issuer}...")

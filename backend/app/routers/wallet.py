@@ -33,7 +33,7 @@ def get_balance(
     wallet = ledger.wallet_for(current_user)
     db.commit()
     return {
-        "rlusd_balance": ledger.balance(wallet, "RLUSD"),
+        "uctusd_balance": ledger.balance(wallet, "UCTUSD"),
         "balances": ledger.balances(wallet),
     }
 
@@ -60,7 +60,7 @@ def request_cash_out(
 ):
     """
     Still Track 3's to finish, but the ledger half is in place: a
-    cash-out is `ledger.debit(wallet, "RLUSD", ...)` followed by
+    cash-out is `ledger.debit(wallet, "UCTUSD", ...)` followed by
     `ledger.credit(wallet, <payout currency>, ...)`, and
     InsufficientFundsError already covers the "validate sufficient
     balance" step.

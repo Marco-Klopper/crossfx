@@ -25,7 +25,7 @@ class Beneficiary(Base):
     full_name = Column(String, nullable=False)
     contact = Column(String, nullable=False)  # mobile number or email
     country = Column(String, nullable=False)
-    preferred_payout_currency = Column(String, nullable=False)  # e.g. USD, RLUSD
+    preferred_payout_currency = Column(String, nullable=False)  # e.g. USD, UCTUSD
     relationship_to_sender = Column(String, nullable=False)
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

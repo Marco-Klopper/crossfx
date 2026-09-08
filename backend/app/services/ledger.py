@@ -12,12 +12,12 @@ neither.
 
 Callers by track:
   Track 2  worker/settlement_worker.py  credits the recipient's claim
-  Track 3  routers/wallet.py /cash-out  debits RLUSD, credits fiat
+  Track 3  routers/wallet.py /cash-out  debits UCTUSD, credits fiat
 
 Usage:
     ledger = Ledger(db)
     wallet = ledger.wallet_for(user)
-    ledger.credit(wallet, "RLUSD", Decimal("52.5"))
+    ledger.credit(wallet, "UCTUSD", Decimal("52.5"))
     db.commit()
 """
 import enum

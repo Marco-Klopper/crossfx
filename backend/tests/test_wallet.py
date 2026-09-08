@@ -30,7 +30,7 @@ class TestBalance:
         headers, _ = auth_headers
         resp = client.get("/wallet/balance", headers=headers)
         assert resp.status_code == 200
-        assert float(resp.json()["rlusd_balance"]) == 0.0
+        assert float(resp.json()["uctusd_balance"]) == 0.0
 
     def test_lists_every_supported_currency_even_when_unheld(
         self, client, auth_headers
@@ -44,7 +44,7 @@ class TestBalance:
         body = client.get("/wallet/balance", headers=headers).json()
 
         assert {b["currency"] for b in body["balances"]} == {
-            "RLUSD",
+            "UCTUSD",
             "USD",
             "ZAR",
         }
@@ -54,11 +54,11 @@ class TestBalance:
         self, client, auth_headers, ledger, db_session
     ):
         headers, user = auth_headers
-        ledger.credit(ledger.wallet_for(user), "RLUSD", Decimal("42.5"))
+        ledger.credit(ledger.wallet_for(user), "UCTUSD", Decimal("42.5"))
         db_session.commit()
 
         body = client.get("/wallet/balance", headers=headers).json()
-        assert float(body["rlusd_balance"]) == 42.5
+        assert float(body["uctusd_balance"]) == 42.5
 
     def test_is_multi_currency(
         self, client, auth_headers, ledger, db_session
@@ -66,7 +66,7 @@ class TestBalance:
         """The point of the internal ledger: one wallet, many currencies."""
         headers, user = auth_headers
         wallet = ledger.wallet_for(user)
-        ledger.credit(wallet, "RLUSD", Decimal("100"))
+        ledger.credit(wallet, "UCTUSD", Decimal("100"))
         ledger.credit(wallet, "USD", Decimal("30"))
         db_session.commit()
 
@@ -74,8 +74,8 @@ class TestBalance:
         by_currency = {
             b["currency"]: float(b["amount"]) for b in body["balances"]
         }
-        assert by_currency == {"RLUSD": 100.0, "USD": 30.0, "ZAR": 0.0}
-        assert float(body["rlusd_balance"]) == 100.0
+        assert by_currency == {"UCTUSD": 100.0, "USD": 30.0, "ZAR": 0.0}
+        assert float(body["uctusd_balance"]) == 100.0
 
 
 class TestTransactions:
@@ -91,12 +91,12 @@ class TestTransactions:
         headers, user = auth_headers
         wallet = ledger.wallet_for(user)
         for amount in ("10", "20"):
-            ledger.credit(wallet, "RLUSD", Decimal(amount))
+            ledger.credit(wallet, "UCTUSD", Decimal(amount))
             db_session.commit()
 
         body = client.get("/wallet/transactions", headers=headers).json()
         assert [float(t["amount"]) for t in body] == [20.0, 10.0]
-        assert all(t["currency"] == "RLUSD" for t in body)
+        assert all(t["currency"] == "UCTUSD" for t in body)
 
     def test_exposes_the_fields_the_brief_requires(
         self, client, auth_headers, ledger, db_session
@@ -104,7 +104,7 @@ class TestTransactions:
         headers, user = auth_headers
         ledger.credit(
             ledger.wallet_for(user),
-            "RLUSD",
+            "UCTUSD",
             Decimal("7"),
             xrpl_tx_hash="ABCDEF123",
         )
@@ -129,7 +129,7 @@ class TestTransactions:
         db_session,
     ):
         headers, user = auth_headers
-        ledger.credit(ledger.wallet_for(user), "RLUSD", Decimal("5"))
+        ledger.credit(ledger.wallet_for(user), "UCTUSD", Decimal("5"))
         db_session.commit()
 
         other = auth_header_for(user_factory(email="other@example.com"))

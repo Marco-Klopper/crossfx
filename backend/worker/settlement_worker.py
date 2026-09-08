@@ -7,7 +7,7 @@ end to end, in the order the brief specifies:
   1. ZAR payment is confirmed          Track 3, routers/remittances.py
   2. A settlement message is queued    Track 3, SettlementQueue.publish
   3. A worker reads the message        SettlementWorker.run
-  4. The RLUSD transfer is submitted   SettlementWorker.settle, step 3
+  4. The UCTUSD transfer is submitted  SettlementWorker.settle, step 3
   5. Success or failure is recorded    SettlementWorker.settle, steps 4/5
   6. The recipient's balance updates   SettlementWorker.settle, step 4
 
@@ -206,9 +206,9 @@ class SettlementWorker:
 
         remittance = db.get(Remittance, remittance_id)
         logger.info(
-            "Settling %s: %s RLUSD (idempotency_key=%s)",
+            "Settling %s: %s UCTUSD (idempotency_key=%s)",
             remittance_id,
-            remittance.rlusd_amount,
+            remittance.uctusd_amount,
             idempotency_key,
         )
 
@@ -220,7 +220,7 @@ class SettlementWorker:
         except SettlementError as exc:
             return self._fail(db, remittance, str(exc), recipient=None)
 
-        amount = Decimal(remittance.rlusd_amount)
+        amount = Decimal(remittance.uctusd_amount)
 
         # 3. On-chain leg. The seed is decrypted inside
         #    XRPLService and never reaches this method.
@@ -261,7 +261,7 @@ class SettlementWorker:
         try:
             ledger.credit(
                 ledger.wallet_for(recipient),
-                "RLUSD",
+                "UCTUSD",
                 amount,
                 remittance_id=remittance.id,
                 xrpl_tx_hash=tx_hash,
@@ -302,7 +302,7 @@ class SettlementWorker:
             ) from exc
 
         logger.info(
-            "Settled %s -> %s RLUSD credited to %s",
+            "Settled %s -> %s UCTUSD credited to %s",
             remittance.id,
             amount,
             recipient.email,
@@ -333,8 +333,8 @@ class SettlementWorker:
             ledger.record_external(
                 ledger.wallet_for(recipient),
                 Direction.INCOMING,
-                "RLUSD",
-                Decimal(remittance.rlusd_amount),
+                "UCTUSD",
+                Decimal(remittance.uctusd_amount),
                 remittance_id=remittance.id,
                 status=EntryStatus.FAILED,
                 failure_reason=reason[:500],

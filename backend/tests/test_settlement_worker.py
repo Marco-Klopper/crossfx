@@ -64,7 +64,7 @@ class TestHappyPath:
     ):
         send_pool, payout_pool = pool_wallets
         remittance, _sender, _recipient = remittance_factory(
-            rlusd_amount=Decimal("52.5")
+            uctusd_amount=Decimal("52.5")
         )
 
         outcome = worker.settle(message_for(remittance), db_session)
@@ -76,17 +76,17 @@ class TestHappyPath:
         assert destination == payout_pool.xrpl_address
         assert Decimal(amount) == Decimal("52.5")
 
-    def test_credits_the_recipients_rlusd_claim(
+    def test_credits_the_recipients_uctusd_claim(
         self, worker, db_session, ledger, pool_wallets, remittance_factory
     ):
         remittance, _sender, recipient = remittance_factory(
-            rlusd_amount=Decimal("52.5")
+            uctusd_amount=Decimal("52.5")
         )
 
         worker.settle(message_for(remittance), db_session)
 
         wallet = ledger.wallet_for(recipient)
-        assert ledger.balance(wallet, "RLUSD") == Decimal("52.5")
+        assert ledger.balance(wallet, "UCTUSD") == Decimal("52.5")
 
     def test_stamps_hash_status_and_treasury_fields(
         self, worker, db_session, pool_wallets, remittance_factory
@@ -165,7 +165,7 @@ class TestIdempotency:
         remittance_factory,
     ):
         remittance, _sender, recipient = remittance_factory(
-            rlusd_amount=Decimal("52.5")
+            uctusd_amount=Decimal("52.5")
         )
         message = message_for(remittance)
 
@@ -178,7 +178,7 @@ class TestIdempotency:
         # One payment, one credit — not three.
         assert xrpl.send_pooled_payment.call_count == 1
         wallet = ledger.wallet_for(recipient)
-        assert ledger.balance(wallet, "RLUSD") == Decimal("52.5")
+        assert ledger.balance(wallet, "UCTUSD") == Decimal("52.5")
 
     @pytest.mark.parametrize(
         "status", [RemittanceStatus.QUOTED, RemittanceStatus.SETTLED]
@@ -218,7 +218,7 @@ class TestFailureHandling:
         assert remittance.status == RemittanceStatus.FAILED
         assert remittance.xrpl_tx_hash is None
         assert ledger.balance(
-            ledger.wallet_for(recipient), "RLUSD"
+            ledger.wallet_for(recipient), "UCTUSD"
         ) == Decimal("0")
 
     def test_a_failure_is_still_visible_to_the_recipient(

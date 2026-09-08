@@ -16,7 +16,10 @@ from cryptography.fernet import Fernet
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 os.environ.setdefault("DATABASE_URL", "sqlite://")  # unused directly; tests override get_db
 os.environ.setdefault("PRIVATE_KEY_ENCRYPTION_KEY", Fernet.generate_key().decode())
-os.environ.setdefault("RLUSD_ISSUER_ADDRESS", "rTestIssuerAddressXXXXXXXXXXXXXXXX")
+os.environ.setdefault("UCTUSD_ISSUER_ADDRESS", "rTestIssuerAddressXXXXXXXXXXXXXXXX")
+os.environ.setdefault(
+    "UCTUSD_CURRENCY_CODE", "5543545553440000000000000000000000000000"
+)
 
 import pytest
 from decimal import Decimal
@@ -153,7 +156,7 @@ def remittance_factory(db_session, user_factory):
 
     def _make(
         zar_send_amount=Decimal("1000.00"),
-        rlusd_amount=Decimal("52.500000"),
+        uctusd_amount=Decimal("52.500000"),
         status=RemittanceStatus.CASH_IN_CONFIRMED,
         recipient_email=None,
         register_recipient=True,
@@ -189,7 +192,7 @@ def remittance_factory(db_session, user_factory):
             transaction_fee_zar=Decimal("25.00"),
             fx_margin_zar=Decimal("10.00"),
             net_converted_zar=Decimal("965.00"),
-            rlusd_amount=rlusd_amount,
+            uctusd_amount=uctusd_amount,
             status=status,
         )
         db_session.add(remittance)
