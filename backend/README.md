@@ -31,6 +31,9 @@ Track 3's domain (remittances/cash-outs) and just happen to live in Track 1's fi
 
 ## 2. Setup
 
+Requires Python 3.10+ (`app/config.py` uses PEP 604 `str | None` union syntax, which
+doesn't parse on 3.9).
+
 ```bash
 cd backend
 python -m venv .venv
@@ -81,6 +84,10 @@ alembic upgrade head              # creates the schema — see §9
 uvicorn app.main:app --reload
 python -m scripts.create_admin --email admin@example.com --password adminpass123
 ```
+
+That is everything Track 1's endpoints need. Bringing the *settlement* path up as
+well (pooled wallets, Redis, the worker) is covered in
+[`README-track2.md`](README-track2.md).
 
 Open `http://127.0.0.1:8000/docs`. Click **Authorize**, log in with the admin
 credentials above (that form posts to `/auth/token`, a thin Swagger-only shim over the

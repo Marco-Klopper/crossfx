@@ -13,6 +13,8 @@ cryptography==43.0.1
 xrpl-py==3.0.0
 redis==5.0.8
 httpx==0.24.1  # capped: xrpl-py 3.0.0 (Track 2) requires httpx<0.25
+anyio<4  # httpx==0.24.1 pulls in httpcore==0.17.x, which needs anyio's pre-4.0 API
+         # (anyio>=4 crashes importing xrpl with "module 'anyio' has no attribute 'abc'")
 pytest==8.3.3
 pytest-cov==5.0.0
 email-validator==2.2.0

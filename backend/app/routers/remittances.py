@@ -14,7 +14,7 @@ def create_quote(db: Session = Depends(get_db)):
     # TODO:
     #  1. Check sender KYC == approved
     #  2. Fetch/simulate USD/ZAR rate (app.services.fx_rate_service)
-    #  3. Calculate fee, fx margin, net converted amount, rlusd_amount (app.services.fee_service)
+    #  3. Calculate fee, fx margin, net converted amount, uctusd_amount (app.services.fee_service)
     #  4. Check remittance would not exceed daily/monthly limits
     #  5. Return quotation (not yet persisted as a committed remittance, or persisted as status=quoted)
     raise NotImplementedError

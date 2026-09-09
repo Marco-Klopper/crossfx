@@ -1,5 +1,5 @@
 """
-A single remittance transaction: ZAR in, RLUSD settled to the recipient's wallet.
+A single remittance transaction: ZAR in, UCTUSD settled to the recipient's wallet.
 
 Status flow (roughly):
   quoted -> cash_in_confirmed -> queued -> settling -> settled -> (cashed_out) | failed
@@ -36,7 +36,7 @@ class Remittance(Base):
     transaction_fee_zar = Column(Numeric(12, 2), nullable=False)
     fx_margin_zar = Column(Numeric(12, 2), nullable=False)
     net_converted_zar = Column(Numeric(12, 2), nullable=False)
-    rlusd_amount = Column(Numeric(18, 6), nullable=False)
+    uctusd_amount = Column(Numeric(18, 6), nullable=False)
 
     status = Column(Enum(RemittanceStatus), default=RemittanceStatus.QUOTED, nullable=False)
 
@@ -45,6 +45,10 @@ class Remittance(Base):
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     settled_at = Column(DateTime, nullable=True)
+
+    # Physical treasury settlement (spec 9.4) —  batched treasury settlement; many rows may share one value.
+    treasury_batch_id = Column(String, nullable=True)
+    treasury_settled_at = Column(DateTime, nullable=True)
 
     # TODO: add cash-out sub-record (status: requested/approved/completed/failed,
     # payout currency, cash-out fee, final fiat amount)

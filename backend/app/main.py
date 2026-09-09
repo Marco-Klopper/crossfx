@@ -12,7 +12,7 @@ from app.routers import admin, auth, beneficiaries, kyc, remittances, wallet
 
 app = FastAPI(
     title="CrossFX API",
-    description="Prototype cross-border FX remittance platform settling in RLUSD on XRPL Testnet.",
+    description="Prototype cross-border FX remittance platform settling in UCTUSD on XRPL Testnet.",
     version="0.1.0",
 )
 
