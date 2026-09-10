@@ -47,11 +47,33 @@ class Settings(BaseSettings):
     supported_currencies: str = "UCTUSD,USD,ZAR"
 
     # FX / fees
+    # mock  — a deterministic, slowly-moving rate; no network, safe for load tests
+    # api   — a public FX endpoint, cached for fx_rate_cache_seconds
+    # table — the latest row in the fx_rates table (scripts/seed_fx_rates.py)
     exchange_rate_source: str = "mock"
     fixed_remittance_fee_zar: float = 25
     percent_fee_bps: int = 150
     fx_margin_bps: int = 100
     cashout_fee_bps: int = 100
+
+    # The rate the mock oscillates around, and how far it may drift either
+    # way. Both are config so a demo can be pinned to a flat rate by setting
+    # the volatility to 0.
+    fx_mock_base_rate: float = 18.50
+    fx_mock_volatility_bps: int = 150
+
+    # Free, keyless USD-base endpoint: {"rates": {"ZAR": 18.42, ...}}. The
+    # response path is config too, so swapping providers is a .env change.
+    fx_api_url: str = "https://open.er-api.com/v6/latest/USD"
+    fx_api_rate_path: str = "rates.ZAR"
+    fx_api_timeout_seconds: float = 5.0
+    # How long a fetched rate is reused. Quoting is meant to be pure compute
+    # (performance-testing/README.md), so the API must not be hit per request.
+    fx_rate_cache_seconds: int = 300
+
+    # How long a quote is honoured before the sender has to ask for a new
+    # one. An unfunded quote holds limit headroom until it expires (§6).
+    quote_ttl_minutes: int = 15
 
     # Remittance limits (ZAR)
     unverified_daily_limit: float = 0
