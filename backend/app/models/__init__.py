@@ -6,8 +6,9 @@ Import every model module here so:
      across files, which requires every mapped class to have been loaded first.
 """
 from app.models.beneficiary import Beneficiary
+from app.models.fx_rate import FxRate
 from app.models.kyc import KYCApplication
-from app.models.remittance import Remittance
+from app.models.remittance import CashOut, CashOutStatus, Remittance
 from app.models.user import User
 from app.models.wallet import (
     LedgerBalance,
@@ -19,6 +20,9 @@ from app.models.wallet import (
 
 __all__ = [
     "Beneficiary",
+    "CashOut",
+    "CashOutStatus",
+    "FxRate",
     "KYCApplication",
     "LedgerBalance",
     "PlatformWallet",

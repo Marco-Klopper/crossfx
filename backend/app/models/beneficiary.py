@@ -31,3 +31,7 @@ class Beneficiary(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     sender = relationship("User", back_populates="beneficiaries")
+    # No cascade: a beneficiary with remittances against it cannot be
+    # deleted at all (routers/beneficiaries.py returns 409), because the
+    # settlement worker resolves the recipient through this row.
+    remittances = relationship("Remittance", back_populates="beneficiary")
