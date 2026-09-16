@@ -1,21 +1,358 @@
 """
-Simulated ZAR cash-in confirmation and fiat cash-out processing.
-No real payment rails are touched — everything here is a mock/status simulation.
+Simulated ZAR cash-in confirmation and fiat cash-out processing
+(spec §8 and §10).
+
+No real payment rails are touched. A production build would replace
+`simulate_cash_in` with a webhook from a PSP and `simulate_cash_out` with
+a payout instruction to a bank or agent network; everything either side of
+those two functions — the state machine, the ledger entries, the queue
+handoff — is the real thing and would not change.
+
+Nothing here commits. The caller owns the transaction boundary, for the
+same reason app.services.ledger does: a status change and the ledger entry
+behind it have to land together or not at all.
 """
+import logging
+from datetime import datetime, timezone
+from decimal import Decimal
+
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.models.beneficiary import Beneficiary
+from app.models.remittance import CashOut, CashOutStatus, Remittance, RemittanceStatus
+from app.models.user import User
+from app.services import fee_service
+from app.services.ledger import InsufficientFundsError, Ledger
+from app.services.settlement_queue import SettlementQueue
+
+logger = logging.getLogger(__name__)
+
+# The three ways a sender can hand over rand in this corridor. Agent cash
+# is the one that matters for the brief's target user: no bank account.
+CASH_IN_METHODS = frozenset({"agent_cash", "bank_transfer", "card"})
+
+# What a recipient may cash out into. Narrower than
+# schemas/beneficiary.ALLOWED_PAYOUT_CURRENCIES, and deliberately so: the
+# internal ledger only accepts SUPPORTED_CURRENCIES, and fee_service can
+# only price the pair it has a rate for. UCTUSD is excluded because
+# "cashing out" into the token you already hold is a no-op.
+def payout_currencies() -> list[str]:
+    return sorted(
+        set(settings.supported_currencies_list)
+        & (
+            fee_service.PRICEABLE_PAYOUT_CURRENCIES
+            - {fee_service.SETTLEMENT_CURRENCY}
+        )
+    )
 
 
-def simulate_cash_in(remittance_id: str, method: str) -> bool:
-    """
-    method: agent_cash | bank_transfer | card
-    Returns True once "confirmed" (mocked, or via admin.confirm_zar_payment).
-    """
-    # TODO: mark remittance.status = cash_in_confirmed
-    raise NotImplementedError
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
-def simulate_cash_out(cash_out_id: str) -> str:
+class CashInError(Exception):
+    """Base class for cash-in rejections."""
+
+
+class InvalidCashInMethodError(CashInError):
+    pass
+
+
+class QuoteExpiredError(CashInError):
+    """The quoted rate and fees are no longer honoured (spec §5)."""
+
+
+class CashInStateError(CashInError):
+    """The remittance is past the point where cash-in can be confirmed."""
+
+
+class RecipientNotRegisteredError(CashInError):
     """
-    Progresses a cash-out through requested -> approved -> completed (or failed).
+    No CrossFX account matches the beneficiary's contact details. Under
+    pooled custody the credit lands in the recipient's internal wallet,
+    which they must own before value can be sent to it (spec §9.1).
     """
-    # TODO: implement simple state machine, return final status
-    raise NotImplementedError
+
+
+class SettlementPublishError(Exception):
+    """
+    The queue would not take the message. The remittance is left
+    CASH_IN_CONFIRMED, which is a re-publishable state — see
+    routers/admin.py's confirm-payment.
+    """
+
+
+class CashOutError(Exception):
+    """Base class for cash-out rejections."""
+
+
+class CashOutStateError(CashOutError):
+    pass
+
+
+# -- cash-in (spec §8) ------------------------------------------------------
+
+
+def simulate_cash_in(
+    db: Session, remittance: Remittance, method: str, now: datetime | None = None
+) -> bool:
+    """
+    Mock confirmation that the sender's rand arrived.
+
+    Returns True when this call is what confirmed it, and False when it
+    was already confirmed — so a double-submitted form is a no-op rather
+    than an error, and the caller can still safely (re)publish.
+    """
+    normalised = method.strip().lower()
+    if normalised not in CASH_IN_METHODS:
+        raise InvalidCashInMethodError(
+            f"cash_in_method must be one of {sorted(CASH_IN_METHODS)}"
+        )
+
+    if remittance.status in (
+        RemittanceStatus.CASH_IN_CONFIRMED,
+        RemittanceStatus.QUEUED,
+    ):
+        return False
+    if remittance.status != RemittanceStatus.QUOTED:
+        raise CashInStateError(
+            f"Remittance is {remittance.status.value}; cash-in can only be "
+            f"confirmed on a quote"
+        )
+    if remittance.is_quote_expired(now):
+        raise QuoteExpiredError(
+            "This quote has expired — request a new one before paying in"
+        )
+    # Checked here, at the point money changes hands, rather than at quote
+    # time: taking a sender's cash for a transfer that cannot land is the
+    # failure worth preventing, and quoting is only pricing.
+    assert_recipient_registered(db, remittance)
+
+    remittance.cash_in_method = normalised
+    remittance.status = RemittanceStatus.CASH_IN_CONFIRMED
+    remittance.cash_in_confirmed_at = now or _utcnow()
+    # The figures are locked in now, so there is nothing left to expire.
+    remittance.quote_expires_at = None
+    db.flush()
+    return True
+
+
+def assert_recipient_registered(db: Session, remittance: Remittance) -> User:
+    """
+    The registered user whose wallet a settlement would credit.
+
+    Resolved the same way worker/settlement_worker.py resolves it — by
+    matching Beneficiary.contact against User.email — so a remittance that
+    passes here is one the worker can actually settle.
+    """
+    beneficiary = db.get(Beneficiary, remittance.beneficiary_id)
+    if beneficiary is None:
+        raise RecipientNotRegisteredError(
+            "This remittance has no beneficiary on record"
+        )
+    recipient = (
+        db.query(User).filter(User.email == beneficiary.contact).first()
+    )
+    if recipient is None:
+        raise RecipientNotRegisteredError(
+            f"{beneficiary.contact} has no CrossFX account yet — the "
+            f"recipient must register before this transfer can be paid in"
+        )
+    return recipient
+
+
+def queue_for_settlement(
+    db: Session,
+    remittance: Remittance,
+    queue: SettlementQueue | None = None,
+) -> str:
+    """
+    Step 2 of the brief's async flow: hand the remittance to the
+    settlement queue and mark it QUEUED.
+
+    Call this only after the CASH_IN_CONFIRMED status has been committed.
+    Publishing first and committing after would let a crash in between
+    leave a message pointing at a remittance the worker will refuse to
+    claim; this ordering can only ever produce the harmless opposite — a
+    confirmed remittance whose message is republished.
+    """
+    if remittance.status not in (
+        RemittanceStatus.CASH_IN_CONFIRMED,
+        RemittanceStatus.QUEUED,
+    ):
+        raise CashInStateError(
+            f"Remittance is {remittance.status.value}; only a confirmed "
+            f"cash-in can be queued"
+        )
+
+    try:
+        entry_id = (queue or SettlementQueue()).publish(
+            remittance.idempotency_key, remittance.id
+        )
+    except Exception as exc:
+        logger.exception(
+            "Could not publish settlement for %s — left CASH_IN_CONFIRMED "
+            "for retry",
+            remittance.id,
+        )
+        raise SettlementPublishError(str(exc)) from exc
+
+    remittance.status = RemittanceStatus.QUEUED
+    db.flush()
+    logger.info(
+        "Queued %s for settlement (entry %s)", remittance.id, entry_id
+    )
+    return entry_id
+
+
+# -- cash-out (spec §10) ----------------------------------------------------
+
+
+def request_cash_out(
+    db: Session,
+    user: User,
+    uctusd_amount: Decimal,
+    payout_currency: str,
+    usd_zar_rate: Decimal,
+) -> CashOut:
+    """
+    Opens a cash-out and debits the UCTUSD immediately.
+
+    Debiting on request rather than on approval is what stops a recipient
+    opening three cash-outs against one balance and having all three
+    approved. `Ledger.debit` refusing to go negative is the brief's
+    "validate sufficient balance" step, so there is no separate check.
+    """
+    quote = fee_service.calculate_cash_out_payout(
+        uctusd_amount, payout_currency, usd_zar_rate
+    )
+    if quote.payout_currency not in payout_currencies():
+        raise fee_service.UnsupportedPayoutCurrencyError(
+            f"{quote.payout_currency} is not a supported payout currency — "
+            f"supported: {payout_currencies()}"
+        )
+
+    ledger = Ledger(db)
+    wallet = ledger.wallet_for(user)
+    # Propagates InsufficientFundsError to the caller, which maps it to a
+    # 400 with the shortfall in the message.
+    debit = ledger.debit(
+        wallet, fee_service.SETTLEMENT_CURRENCY, quote.uctusd_amount
+    )
+
+    cash_out = CashOut(
+        user_id=user.id,
+        uctusd_amount=quote.uctusd_amount,
+        cash_out_fee_uctusd=quote.cash_out_fee_uctusd,
+        net_uctusd=quote.net_uctusd,
+        payout_currency=quote.payout_currency,
+        payout_amount=quote.payout_amount,
+        fx_rate_used=quote.fx_rate,
+        status=CashOutStatus.REQUESTED,
+        debit_transaction_id=debit.id,
+    )
+    db.add(cash_out)
+    db.flush()
+    logger.info(
+        "Cash-out %s requested: %s UCTUSD -> %s %s",
+        cash_out.id,
+        quote.uctusd_amount,
+        quote.payout_amount,
+        quote.payout_currency,
+    )
+    return cash_out
+
+
+def simulate_cash_out(
+    db: Session, cash_out: CashOut, now: datetime | None = None
+) -> CashOutStatus:
+    """
+    Progresses a requested cash-out through approved to completed, and
+    credits the fiat leg.
+
+    Both steps happen in one call because the simulated payout rail is
+    instant: there is no window in which "approved but not yet paid" is a
+    state anyone could observe. The APPROVED timestamp is still recorded,
+    so swapping in a real rail means returning after the approval instead
+    of falling through to the credit — not restructuring this.
+    """
+    if cash_out.status != CashOutStatus.REQUESTED:
+        raise CashOutStateError(
+            f"Cash-out is already {cash_out.status.value}"
+        )
+
+    moment = now or _utcnow()
+    cash_out.status = CashOutStatus.APPROVED
+    cash_out.approved_at = moment
+
+    ledger = Ledger(db)
+    user = db.get(User, cash_out.user_id)
+    credit = ledger.credit(
+        ledger.wallet_for(user),
+        cash_out.payout_currency,
+        Decimal(cash_out.payout_amount),
+    )
+
+    cash_out.credit_transaction_id = credit.id
+    cash_out.status = CashOutStatus.COMPLETED
+    cash_out.completed_at = moment
+    db.flush()
+    logger.info("Cash-out %s completed", cash_out.id)
+    return cash_out.status
+
+
+def fail_cash_out(
+    db: Session,
+    cash_out: CashOut,
+    reason: str,
+    now: datetime | None = None,
+) -> CashOut:
+    """
+    Rejects a requested cash-out and refunds the reserved UCTUSD.
+
+    The refund is a fresh incoming entry rather than a deletion of the
+    debit: wallet_transactions is an immutable audit trail (spec §9.4), so
+    a reversal has to be visible as its own line.
+    """
+    if cash_out.status != CashOutStatus.REQUESTED:
+        raise CashOutStateError(
+            f"Only a requested cash-out can be failed; this one is "
+            f"{cash_out.status.value}"
+        )
+
+    ledger = Ledger(db)
+    user = db.get(User, cash_out.user_id)
+    ledger.credit(
+        ledger.wallet_for(user),
+        fee_service.SETTLEMENT_CURRENCY,
+        Decimal(cash_out.uctusd_amount),
+    )
+
+    cash_out.status = CashOutStatus.FAILED
+    cash_out.failure_reason = reason[:500]
+    cash_out.completed_at = now or _utcnow()
+    db.flush()
+    logger.warning("Cash-out %s failed: %s", cash_out.id, reason)
+    return cash_out
+
+
+__all__ = [
+    "CASH_IN_METHODS",
+    "CashInError",
+    "CashInStateError",
+    "CashOutError",
+    "CashOutStateError",
+    "InvalidCashInMethodError",
+    "InsufficientFundsError",
+    "QuoteExpiredError",
+    "RecipientNotRegisteredError",
+    "SettlementPublishError",
+    "assert_recipient_registered",
+    "fail_cash_out",
+    "payout_currencies",
+    "queue_for_settlement",
+    "request_cash_out",
+    "simulate_cash_in",
+    "simulate_cash_out",
+]
