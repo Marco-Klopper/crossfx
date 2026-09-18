@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.beneficiary import Beneficiary
+from app.models.remittance import Remittance
 from app.models.user import User
 from app.schemas.beneficiary import BeneficiaryCreate, BeneficiaryRead
 
@@ -72,5 +73,25 @@ def delete_beneficiary(
     current_user: User = Depends(get_current_user),
 ):
     beneficiary = _get_owned_beneficiary(db, beneficiary_id, current_user.id)
+
+    # A beneficiary with remittances against it cannot be removed: the
+    # settlement worker resolves the recipient through this row, and the
+    # sender's history would lose the name the money was sent to. Track 3
+    # added the remittances this guards.
+    has_remittances = (
+        db.query(Remittance.id)
+        .filter(Remittance.beneficiary_id == beneficiary.id)
+        .first()
+        is not None
+    )
+    if has_remittances:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This beneficiary has remittances against it and cannot be "
+                "removed"
+            ),
+        )
+
     db.delete(beneficiary)
     db.commit()

@@ -86,3 +86,20 @@ def test_delete_another_users_beneficiary_returns_404(
 
     resp = client.delete(f"/beneficiaries/{created['id']}", headers=other_headers)
     assert resp.status_code == 404
+
+
+def test_cannot_delete_a_beneficiary_with_remittances(
+    client, quote_factory, fake_queue
+):
+    """
+    Track 3 made beneficiaries load-bearing: the settlement worker
+    resolves the recipient through this row, and the sender's history
+    would lose the name the money was sent to.
+    """
+    _, headers, _, beneficiary = quote_factory()
+
+    response = client.delete(f"/beneficiaries/{beneficiary.id}", headers=headers)
+
+    assert response.status_code == 409
+    assert "remittances" in response.json()["detail"]
+    assert client.get(f"/beneficiaries/{beneficiary.id}", headers=headers).status_code == 200

@@ -1,9 +1,8 @@
 """
 Integration tests for routers/wallet.py under pooled custody.
 
-/cash-out is intentionally not covered — it is still blocked on Track
-3's fee_service and the cash-out sub-record (see the docstring on
-request_cash_out).
+/cash-out and /cash-outs live in test_cash_out.py, with the admin
+approval half of that flow they only make sense beside.
 """
 from decimal import Decimal
 
