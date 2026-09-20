@@ -20,14 +20,16 @@ It does **not** own, and does not implement:
 - Wallets, XRPL, trust lines, the settlement worker (**Track 2** —
   `app/services/xrpl_service.py`, `app/models/wallet.py`, `worker/`)
 - FX rates, fees, quotes, the remittance flow, cash-in/cash-out (**Track 3** —
-  `app/services/fx_rate_service.py`, `fee_service.py`, `cashin_cashout_service.py`,
-  `app/routers/remittances.py`, `wallet.py`)
+  `app/services/fx_rate_service.py`, `fee_service.py`, `limits_service.py`,
+  `cashin_cashout_service.py`, `app/routers/remittances.py`, `wallet.py`; see
+  [`README-track3.md`](README-track3.md))
 - The frontend, load testing, most of the spec (**Track 4**)
 
-Two endpoints in `admin.py` (`confirm-payment`, `cash-outs/approve`) are gated with the
-same admin check as the rest of the router, but their bodies are deliberately left
-`raise NotImplementedError` with a docstring explaining the contract — they belong to
-Track 3's domain (remittances/cash-outs) and just happen to live in Track 1's file.
+The cash-in and cash-out endpoints in `admin.py` are gated with the same admin check as
+the rest of the router, but their bodies belong to Track 3's domain
+(remittances/cash-outs) and were implemented there — they just happen to live in Track
+1's file. Track 3 also added the `409` on deleting a beneficiary that has remittances
+against it, since it is their rows that make the guard necessary.
 
 ## 2. Setup
 
@@ -170,8 +172,14 @@ python -m scripts.walkthrough
 | GET | `/admin/kyc/applications?status=` | admin | Review queue, optional status filter |
 | POST | `/admin/kyc/{id}/approve` | admin | 409 if not currently pending |
 | POST | `/admin/kyc/{id}/reject` | admin | Body: `{"reason": "..."}` (optional) |
-| POST | `/admin/remittances/{id}/confirm-payment` | admin | Gated; body is Track 3's to implement |
-| POST | `/admin/cash-outs/{id}/approve` | admin | Gated; body is Track 3's to implement |
+| DELETE | `/beneficiaries/{id}` | user | **409** if the beneficiary has remittances against it (Track 3) |
+| POST | `/admin/remittances/{id}/confirm-payment` | admin | Gated here, implemented by Track 3 — mock cash-in confirmation and republish retry |
+| POST | `/admin/cash-outs/{id}/approve`, `/reject` | admin | Gated here, implemented by Track 3 — payout review |
+| GET | `/admin/cash-outs?status=` | admin | Payout queue (Track 3) |
+
+Track 3's own routes (`/remittances/*`, `/wallet/cash-out`) are documented in
+[`README-track3.md`](README-track3.md); Track 2's in
+[`README-track2.md`](README-track2.md).
 
 ## 6. Data model
 

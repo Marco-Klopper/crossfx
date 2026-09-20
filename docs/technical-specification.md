@@ -14,9 +14,194 @@
 
 ## 4. Fee Model
 
+*Written by Track 3 (FX, Fees & Remittance Flow).*
+
+CrossFX charges a sender three things and a recipient one, and every one of them
+is a configuration value rather than a constant — the brief requires fees and
+limits to be configurable, so they live in `app/config.py` and `.env`, and
+nothing in the code hardcodes a number.
+
+| Charge | Setting | Default | Applied to |
+|---|---|---|---|
+| Fixed transaction fee | `FIXED_REMITTANCE_FEE_ZAR` | R25 | every remittance |
+| Percentage transaction fee | `PERCENT_FEE_BPS` | 150 bps (1.50%) | ZAR send amount |
+| FX margin | `FX_MARGIN_BPS` | 100 bps (1.00%) | ZAR send amount |
+| Cash-out fee | `CASHOUT_FEE_BPS` | 100 bps (1.00%) | UCTUSD being cashed out (§10) |
+
+The fixed component covers the per-transaction cost of the corridor — the agent
+network, the XRPL leg, the ledger write — which does not scale with size. The
+percentage component covers the risk and float that do. The margin is the spread
+on the currency conversion itself, which is how remittance providers actually
+make most of their money; naming it as its own line rather than hiding it in the
+rate is a deliberate disclosure decision, and the reason for the next paragraph.
+
+### 4.1 The margin is charged once
+
+The margin is deducted from the rand **and the remainder is converted at the
+mid-market rate**. An earlier draft of `fee_service.calculate_quote` did both —
+deducted `fx_margin_zar` *and* converted at a rate marked up by the same
+`FX_MARGIN_BPS` — which billed the same spread twice and made the disclosed
+margin line understate what the customer was actually charged. It was fixed, and
+`tests/test_fee_service.py::test_margin_is_charged_once_not_twice` exists to stop
+it coming back.
+
+So the arithmetic, in order:
+
+```
+transaction_fee_zar = FIXED_REMITTANCE_FEE_ZAR + zar_send_amount × PERCENT_FEE_BPS / 10 000
+fx_margin_zar       = zar_send_amount × FX_MARGIN_BPS / 10 000
+net_converted_zar   = zar_send_amount − transaction_fee_zar − fx_margin_zar
+uctusd_amount       = net_converted_zar / usd_zar_rate          ← mid-market, §5
+effective_rate      = zar_send_amount / uctusd_amount           ← disclosed all-in rate
+```
+
+### 4.2 Worked example
+
+R1 000 at a mid-market rate of 18.50, on the defaults above:
+
+| Line | Amount |
+|---|---|
+| Send amount | R1 000.00 |
+| Transaction fee (R25 + 1.50%) | −R40.00 |
+| FX margin (1.00%) | −R10.00 |
+| Converted | R950.00 |
+| Exchange rate | 18.500000 ZAR/USD |
+| **Recipient receives** | **51.351351 UCTUSD** |
+| All-in effective rate | 19.473684 ZAR per UCTUSD |
+| Estimated cash-out fee (1.00%) | 0.513513 UCTUSD |
+| **Estimated USD payout** | **$50.83** |
+
+Total cost to the sender is R50 on R1 000 — 5.0% all-in, against a World Bank
+global average of roughly 6.2% for a $200 remittance. Every one of those figures
+is returned by `POST /remittances/quote`, because a quotation the customer cannot
+decompose is not a disclosure.
+
+### 4.3 Rounding
+
+Fiat is held to two decimal places and UCTUSD to six, matching the column types
+(`Numeric(12, 2)` and `Numeric(18, 6)`). Fees round half-up; anything credited to
+a customer rounds **down**. That asymmetry is not greed — under pooled custody the
+payout pool has to actually cover every claim in the ledger (§9.6), so a fraction
+rounded in the customer's favour is a shortfall the platform funds out of nothing.
+
+Where the money ends up: the transaction fee and FX margin stay in the send pool
+as rand that was never converted, and the cash-out fee stays as UCTUSD that is
+debited from the recipient and credited to no one. Neither is modelled as a
+revenue account in this prototype — see §15.
+
 ## 5. Exchange-Rate Calculation
 
+*Written by Track 3 (FX, Fees & Remittance Flow).*
+
+One corridor, one pair: **USD/ZAR**, quoted as rand per dollar. UCTUSD is a
+USD-denominated IOU, so a UCTUSD amount and a USD amount are the same number, and
+USD/ZAR is the only rate the platform needs.
+
+`app/services/fx_rate_service.py` exposes exactly one function,
+`get_usd_zar_rate(db)`, and three interchangeable implementations behind it,
+selected by `EXCHANGE_RATE_SOURCE`. Callers never change.
+
+| Source | Behaviour | Use |
+|---|---|---|
+| `mock` *(default)* | Deterministic rate drifting around `FX_MOCK_BASE_RATE` (18.50) by at most `FX_MOCK_VOLATILITY_BPS` (150 bps) | Demo and load tests |
+| `api` | A public endpoint (`FX_API_URL`, keyless, USD-base), cached for `FX_RATE_CACHE_SECONDS` | Realism, when there is internet |
+| `table` | The most recent `fx_rates` row, written by `python -m scripts.seed_fx_rates` | A pinned rate for marking |
+
+### 5.1 Why the default is a mock, and why it still moves
+
+`performance-testing/README.md` characterises `POST /remittances/quote` as *"pure
+compute"*. A quote endpoint that makes an outbound HTTP request per call is not
+pure compute — it is a measurement of someone else's API, and it becomes the
+bottleneck the load test was meant to measure around. The `mock` source makes the
+quote path a few decimal multiplications and one database insert.
+
+A constant, though, demonstrates nothing: half the point of an FX product is that
+the rate moves. The mock derives its offset from a SHA-256 hash of the current
+cache bucket, which gives a rate that drifts unpredictably between buckets but is
+a **pure function of the clock**: two API workers quoting the same second agree,
+a restarted process agrees with itself, and a test can pin a rate by pinning the
+time. `FX_MOCK_VOLATILITY_BPS=0` flattens it entirely, which is what a scripted
+demo wants. The `api` source is cached for the same reason and additionally falls
+back to the last good rate when a refresh fails — stale but real beats refusing to
+quote because a third party blinked.
+
+### 5.2 The rate is locked at quote time
+
+A quote stores the rate it used in `remittances.fx_rate_used` and is honoured for
+`QUOTE_TTL_MINUTES` (15 by default), recorded in `remittances.quote_expires_at`.
+Confirming cash-in against an expired quote is refused with `409` and the sender
+is asked for a new one; confirming a live quote clears the expiry, because at that
+point the figures are committed and there is nothing left to age out.
+
+Fifteen minutes is a judgement call, not a derivation. It is long enough for
+someone to walk to an agent, and short enough that the platform is not holding a
+one-sided option on the currency for a customer who may never come back.
+
+### 5.3 What is disclosed
+
+`POST /remittances/quote` returns both `fx_rate` — the mid-market rate, with no
+margin in it — and `effective_rate`, the all-in rand-per-UCTUSD the sender is
+actually paying once the fee and margin are counted. Publishing only the first
+would be the standard trick of advertising a good rate and recovering it in fees;
+publishing only the second would hide how the price was built. Both, and the two
+charge lines between them, is the whole picture.
+
 ## 6. Remittance Limits
+
+*Written by Track 3 (FX, Fees & Remittance Flow).*
+
+Every sender has a daily and a monthly ZAR ceiling, set by their KYC status.
+
+| KYC status | Daily | Monthly | Setting |
+|---|---|---|---|
+| `approved` | R3 000 | R25 000 | `VERIFIED_DAILY_LIMIT` / `VERIFIED_MONTHLY_LIMIT` |
+| anything else | R0 | R0 | `UNVERIFIED_DAILY_LIMIT` / `UNVERIFIED_MONTHLY_LIMIT` |
+
+An unverified sender's limit being zero is the point: it makes "you must complete
+KYC before sending" a consequence of the limit model rather than a separate rule.
+`GET /auth/me` already advertises the applicable pair, and the quote endpoint is
+additionally gated on `require_kyc_approved`, so the two can never disagree.
+
+`app/services/limits_service.py` owns the two questions the limits raise that the
+numbers above do not answer.
+
+### 6.1 The window is South African, not UTC
+
+Limits are a South African construct denominated in rand, so a sender's "today" is
+their today. The window is the calendar day and calendar month at **UTC+02:00**;
+under a UTC window the daily limit would reset at 02:00 local, which is the middle
+of the evening for anyone sending after work.
+
+SAST is expressed as a fixed offset rather than the `Africa/Johannesburg` zone
+because SAST has never observed daylight saving, and a fixed offset needs no
+`tzdata` package on the Windows machines the team develops on.
+
+### 6.2 Which remittances consume headroom
+
+| Status | Counts? | Why |
+|---|---|---|
+| `quoted`, not yet expired | yes | otherwise a sender could take out ten quotes for their full limit and fund all ten |
+| `cash_in_confirmed`, `queued`, `settling` | yes | the money has left the sender and is on its way |
+| `settled` | yes | it arrived |
+| `quoted`, expired | no | they never funded it |
+| `failed` | no | no value left the sender |
+
+This is what makes persisting a quote as a `QUOTED` row (rather than computing it
+in memory) load-bearing rather than incidental: the row *is* the reservation, and
+`quote_expires_at` is what returns the reservation if it is never taken up.
+
+### 6.3 What the sender sees
+
+`assert_within_limits` checks the daily ceiling before the monthly one — it is the
+tighter of the two, and "come back tomorrow" is actionable in a way that "come back
+next month" is not. A breach is refused with `403` and a message naming the period,
+the limit and the headroom remaining, and every successful quote carries a `limits`
+block with the same four figures so the quote screen can show a sender where they
+stand before they hit the wall.
+
+A `403` rather than a `422` because nothing is wrong with the request: it is
+well-formed, from an authenticated and verified sender, and policy is what refuses
+it.
 
 ## 7. Architecture Diagram
 
@@ -87,13 +272,13 @@ flowchart TB
 | REST API | `app/main.py` (FastAPI, CORS, `/docs`) | 1 | Done |
 | Relational database | PostgreSQL; SQLite for dev and CI | 1 | Done |
 | User and KYC module | `routers/auth.py`, `kyc.py`, `beneficiaries.py`, `models/user.py`, `kyc.py`, `beneficiary.py` | 1 | Done |
-| Remittance and fee module | `routers/remittances.py`, `services/fee_service.py`, `models/remittance.py` | 3 | Fee math done; endpoints outstanding |
-| Wallet and transaction module | `routers/wallet.py`, `services/ledger.py`, `models/wallet.py` | 2 | Balance and history done; cash-out awaits Track 3 |
-| Exchange-rate service | `services/fx_rate_service.py` | 3 | Mock returns a fixed rate; API and table modes outstanding |
+| Remittance and fee module | `routers/remittances.py`, `services/fee_service.py`, `services/limits_service.py`, `models/remittance.py` | 3 | Done |
+| Wallet and transaction module | `routers/wallet.py`, `services/ledger.py`, `models/wallet.py` | 2, 3 | Done — balance and history (T2), cash-out (T3) |
+| Exchange-rate service | `services/fx_rate_service.py`, `models/fx_rate.py` | 3 | Done — all three sources (§5) |
 | Message broker | Redis Streams via `services/settlement_queue.py` | 2 | Done |
 | XRPL settlement worker | `worker/settlement_worker.py` | 2 | Done |
-| Mock cash-in and cash-out services | `services/cashin_cashout_service.py` | 3 | Not started |
-| Administrator interface | `routers/admin.py` | 1 | KYC review done; two bodies await Track 3 |
+| Mock cash-in and cash-out services | `services/cashin_cashout_service.py` | 3 | Done (§8, §10) |
+| Administrator interface | `routers/admin.py` | 1, 3 | Done — KYC review (T1), cash-in confirmation and payout review (T3) |
 
 ### 7.2 Two processes, one database
 
@@ -153,6 +338,70 @@ with no code change. The worker needs no inbound network access, which is the
 right shape for the one component that can move funds.
 
 ## 8. Cash-In Flow
+
+*Written by Track 3 (FX, Fees & Remittance Flow).*
+
+Cash-in is where the sender's rand becomes the platform's rand, and it is step 1
+of the brief's mandated asynchronous flow (§9.3). It is **simulated**: no payment
+rail is touched, and `app/services/cashin_cashout_service.py::simulate_cash_in` is
+the seam a real integration would replace.
+
+| Method | `cash_in_method` | Real-world equivalent |
+|---|---|---|
+| Agent cash | `agent_cash` | Handing notes to a retail agent — the target user, who has no bank account |
+| Bank transfer | `bank_transfer` | EFT into the corridor's collection account |
+| Card | `card` | Card-funded send through a PSP |
+
+Two endpoints confirm it, and they share one implementation:
+
+- `POST /remittances/{id}/confirm-cash-in` — the sender's own confirmation, which
+  is what the demo UI calls;
+- `POST /admin/remittances/{id}/confirm-payment` — the mock payment-service hook,
+  admin-gated, which is also the manual retry described below.
+
+### 8.1 Sequence
+
+1. **Ownership.** The remittance must belong to the caller, or `404` — not `403`,
+   which would confirm the id exists (§13).
+2. **State.** Only a `QUOTED` remittance can be funded, and only before its quote
+   expires (§5.2). An already-confirmed one is a no-op rather than an error, so a
+   double-submitted form does not produce a failure the sender cannot act on.
+3. **Recipient check.** The beneficiary's contact must match a registered
+   `User.email`, because under pooled custody the credit lands in the recipient's
+   internal wallet (§9.1). This is checked **here and not at quote time**: quoting
+   is only pricing, but taking a sender's cash for a transfer that provably cannot
+   land is the failure worth preventing.
+4. **Confirm and commit.** `status → CASH_IN_CONFIRMED`, `cash_in_confirmed_at`
+   stamped, `quote_expires_at` cleared. Committed on its own.
+5. **Publish and commit.** `SettlementQueue.publish(idempotency_key, id)`, then
+   `status → QUEUED`. The message carries identifiers only; the worker re-reads
+   every authoritative figure from the row.
+
+### 8.2 Why the two commits are in that order
+
+Publishing before committing the status would let a crash in between leave a
+message pointing at a remittance the worker will refuse to claim — a settlement
+lost silently. Committing first can only produce the harmless opposite: a
+confirmed remittance whose message is missing, which is a state the system can see
+and recover from.
+
+So a queue outage does not fail the request. The response returns `200` with
+`queued: false`, a `detail` explaining what happened, and the remittance sitting
+in `CASH_IN_CONFIRMED` — which is one of the two statuses the worker accepts as
+claimable (`settlement_worker.CLAIMABLE`). Re-running the admin confirm-payment
+endpoint republishes it once the queue is back. Returning a `503` instead would
+have been a lie: the cash-in genuinely was confirmed, and a sender told their
+request failed might reasonably pay in twice.
+
+Publishing the same message more than once is safe by construction — the worker
+claims each remittance exactly once (§9.5) — so the retry needs no bookkeeping of
+its own.
+
+### 8.3 Nothing in the request path touches XRPL
+
+The request returns as soon as the message is on the queue. Settlement latency,
+XRPL availability and Testnet congestion are all on the worker's side of that
+boundary (§7.2), which is the entire reason the brief mandates a queue here.
 
 ## 9. UCTUSD Settlement Flow
 
@@ -333,6 +582,69 @@ above has occurred.
 
 ## 10. Cash-Out Flow
 
+*Written by Track 3 (FX, Fees & Remittance Flow).*
+
+The recipient's half of the journey: turning held UCTUSD into fiat. Like cash-in,
+the payout rail is simulated — `simulate_cash_out` is where a real bank or agent
+instruction would go — but the ledger movements, the state machine and the refund
+path are real.
+
+A cash-out is its own record, `cash_outs`, and it belongs to a **user, not a
+remittance**. By the time value is cashed out it has been pooled into a single
+ledger balance; asking which remittance a particular rand came from is a question
+the ledger cannot answer and does not need to.
+
+### 10.1 Sequence
+
+| Step | Endpoint | Effect |
+|---|---|---|
+| Request | `POST /wallet/cash-out` | Prices the payout, **debits the UCTUSD**, creates a `requested` row |
+| Approve | `POST /admin/cash-outs/{id}/approve` | Runs the simulated rail, **credits the fiat**, row → `completed` |
+| Reject | `POST /admin/cash-outs/{id}/reject` | Refunds the UCTUSD, row → `failed` with a reason |
+
+Statuses are `requested → approved → completed`, or `requested → failed`. The
+`approved` timestamp is recorded even though the simulated rail completes
+instantly, so swapping in a real payout partner means returning after approval
+rather than restructuring anything.
+
+### 10.2 The token is debited on request, not on approval
+
+This is the load-bearing decision. If the debit waited for approval, a recipient
+could open three cash-outs for their whole balance and have all three approved —
+each one individually valid at the moment it was checked. Debiting on request
+makes the balance itself the lock: the second request simply fails.
+
+`Ledger.debit` refusing to go below zero *is* the brief's "validate sufficient
+balance" step; there is no separate check to get out of step with it. A rejection
+therefore has to refund, and it does so as a fresh `incoming` entry rather than by
+deleting the debit — `wallet_transactions` is an immutable audit trail (§9.4), so a
+reversal has to be visible in its own right.
+
+### 10.3 Pricing
+
+The cash-out fee (`CASHOUT_FEE_BPS`, §4) is taken in UCTUSD **before** conversion,
+so a recipient pays the same proportion whichever currency they choose; charging
+it after conversion would make the fee depend on the payout currency for no reason
+a customer could explain. The remainder converts at the current mid-market rate
+(§5): 1:1 for USD, and at USD/ZAR for rand.
+
+Payout currencies are narrower than the list a sender may elect for a beneficiary
+(`schemas/beneficiary.ALLOWED_PAYOUT_CURRENCIES` also allows EUR and GBP). A
+currency can only be paid out if the internal ledger accepts it
+(`SUPPORTED_CURRENCIES`) *and* the platform has a rate for it — which today means
+**USD and ZAR**. A beneficiary electing EUR still gets a quote; its payout estimate
+is expressed in USD rather than invented. UCTUSD is excluded because cashing out
+into the token you already hold is a no-op.
+
+### 10.4 Cash-out is not KYC-gated
+
+The sender's endpoints require `require_kyc_approved`; `POST /wallet/cash-out`
+requires only authentication. Gating it would make a recipient unable to touch
+money that is already theirs, and in a real corridor the recipient's identity
+checks belong to the payout partner in the destination country, under that
+country's rules — not to the sending-side platform. It is a prototype
+simplification either way, and §14 and §15 record it as one.
+
 ## 11. Database Design
 
 *Written by Track 1 (Identity & Data). Full detail lives in
@@ -344,15 +656,21 @@ above has occurred.
 users ──┬──< kyc_applications  (user_id FK; reviewed_by_admin_id FK, nullable)
         ├──< beneficiaries     (sender_id FK; unique on (sender_id, contact))
         ├──< remittances        (sender_id FK; beneficiary_id FK)
+        ├──< cash_outs          (user_id FK; debit/credit_transaction_id FKs, nullable)
         └──── wallets           (user_id FK, unique — one wallet per user)
                   ├──< ledger_balances      (wallet_id FK; unique on (wallet_id, currency))
                   └──< wallet_transactions  (wallet_id FK; remittance_id FK, nullable)
 
 platform_wallets   (standalone — the two pooled XRPL corridor accounts, no user FK)
+fx_rates           (standalone — append-only pinned rates for EXCHANGE_RATE_SOURCE=table)
 ```
 
-Track 3 owns `remittances` (many-to-one off both `users` and `beneficiaries`). Track 2
-owns the wallet chain and `platform_wallets`: `wallets` and `wallet_transactions` were
+Track 3 owns `remittances` (many-to-one off both `users` and `beneficiaries`), plus
+`cash_outs` and `fx_rates`, added in migration `b7f4c9e21d08` along with
+`remittances.quote_expires_at` / `cash_in_confirmed_at`. A cash-out hangs off `users`
+rather than `remittances` — see §10 — and points back at the two
+`wallet_transactions` rows behind its debit and its credit, so the audit trail runs
+both ways. Track 2 owns the wallet chain and `platform_wallets`: `wallets` and `wallet_transactions` were
 part of the initial migration for a single shared baseline, and `ledger_balances` /
 `platform_wallets` arrived with the move to pooled custody (§9.1) in migration
 `f20b2cb74a0f`, which also stripped `wallets` down to a container — a user has no
@@ -396,8 +714,9 @@ balance column and no on-chain identity. See §9.4 for the ledger's design.
 
 ## 12. API Overview
 
-*Auth/KYC/beneficiary/admin rows below are Track 1's; Track 4 owns filling in the rest
-of this table (remittances, wallet) as those endpoints land.*
+*Auth/KYC/beneficiary/admin rows below are Track 1's; the remittance, wallet and
+cash-out rows were filled in by Track 3 as those endpoints landed. "user, KYC"
+means the route is gated on `require_kyc_approved`.*
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
@@ -413,12 +732,19 @@ of this table (remittances, wallet) as those endpoints land.*
 | GET, DELETE | `/beneficiaries/{id}` | user | Read/remove a recipient (404, not 403, if it isn't the caller's) |
 | GET | `/admin/kyc/applications` | admin | KYC review queue |
 | POST | `/admin/kyc/{id}/approve`, `/reject` | admin | Review a KYC application |
-| POST | `/admin/remittances/{id}/confirm-payment` | admin | *Admin-gated here; body implemented by Track 3* |
-| POST | `/admin/cash-outs/{id}/approve` | admin | *Admin-gated here; body implemented by Track 3* |
+| POST | `/admin/remittances/{id}/confirm-payment` | admin | Mock payment-service cash-in confirmation, and the republish retry (§8.2) |
+| GET | `/admin/cash-outs` | admin | Payout queue, oldest first; filterable by `?status=` |
+| POST | `/admin/cash-outs/{id}/approve` | admin | Release a payout: credits the fiat leg (§10) |
+| POST | `/admin/cash-outs/{id}/reject` | admin | Refuse a payout and refund the reserved UCTUSD (§10.2) |
 | GET | `/wallet/balance` | user | UCTUSD balance plus the full multi-currency ledger view (§9.4) |
 | GET | `/wallet/transactions` | user | Incoming/outgoing history: currency, amount, status, date, XRPL hash |
-| POST | `/wallet/cash-out` | user | *Ledger half in place; fiat payout + status record are Track 3's (§10)* |
-| — | `/remittances/*` | — | Owned by Track 3 — see their sections |
+| POST | `/wallet/cash-out` | user | Request a fiat payout; debits UCTUSD immediately (§10.2) |
+| GET | `/wallet/cash-outs` | user | The caller's own cash-outs, newest first |
+| GET | `/wallet/cash-outs/{id}` | user | One cash-out (404, not 403, if it isn't the caller's) |
+| POST | `/remittances/quote` | user, KYC | Price a send and persist it as a `quoted` remittance (§4–§6) |
+| POST | `/remittances/{id}/confirm-cash-in` | user, KYC | Confirm ZAR received, then queue settlement (§8) |
+| GET | `/remittances/` | user, KYC | The sender's transaction history, newest first |
+| GET | `/remittances/{id}` | user, KYC | Status, and the XRPL hash once settled |
 
 `platform_wallets` is deliberately absent from this table: it is reachable from no
 route at all (§13).
@@ -484,7 +810,7 @@ route at all (§13).
 
 ## 15. Assumptions and Limitations
 
-*Track 2's entries; other tracks add their own below.*
+*Track 2's entries first, then Track 3's; remaining tracks add their own below.*
 
 - **The settlement asset is UCTUSD, which is what the brief's RLUSD requirement
   is satisfied with.** The course distributes liquidity in `UCTUSD`, a
@@ -526,3 +852,23 @@ route at all (§13).
   stays valid until it expires.
 - **KYC PII is not encrypted at rest** (§13, §14) — identification numbers and
   addresses are plain columns.
+
+- **Fee revenue is not modelled as an account.** Transaction fees and the FX margin
+  stay in the send pool as rand that was never converted; the cash-out fee is UCTUSD
+  debited from a recipient and credited to nobody. The money is correct at every
+  step, but there is no platform revenue ledger to reconcile it against (§4.3).
+- **Payouts settle instantly because nothing actually pays out.** `simulate_cash_out`
+  approves and completes in one call (§10.1). A real payout partner would introduce a
+  genuine `approved`-but-not-yet-paid window, and with it settlement risk this
+  prototype does not model.
+- **One corridor, one currency pair.** Everything assumes ZAR in and USD/ZAR
+  pricing (§5). A second corridor would need a rate per pair and a
+  `currency_pair`-aware `fx_rates` lookup — which the table is already shaped for,
+  but the service is not.
+- **Cash-out is not gated on recipient KYC** (§10.4) — a recipient can move value
+  out with only an account. In a real corridor this is the payout partner's
+  obligation under the destination country's rules, and it is the most significant
+  AML gap in the prototype.
+- **Limits are enforced per user, not per identity.** Nothing stops one person
+  registering twice under two email addresses and getting two sets of limits (§6).
+  Real KYC deduplicates on identification number; this prototype's mock KYC does not.
