@@ -42,5 +42,13 @@ class User(Base):
     beneficiaries = relationship(
         "Beneficiary", back_populates="sender", cascade="all, delete-orphan"
     )
-    # Wallet (Track 2) and Remittance (Track 3) relationships are that track's to wire
-    # up — see docs/work-split.html.
+    # Wallet (Track 2) is reachable through app.services.ledger rather than a
+    # relationship — see app/models/wallet.py.
+    #
+    # Neither collection cascades a delete: remittances and cash-outs are
+    # financial records, and closing an account must not silently erase the
+    # history of money that actually moved.
+    remittances = relationship(
+        "Remittance", back_populates="sender", foreign_keys="Remittance.sender_id"
+    )
+    cash_outs = relationship("CashOut", back_populates="user")

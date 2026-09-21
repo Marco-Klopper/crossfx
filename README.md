@@ -1,6 +1,6 @@
 # CrossFX
 
-**A prototype cross-border FX remittance platform settling value in RLUSD on the XRP Ledger Testnet.**
+**A prototype cross-border FX remittance platform settling value in UCTUSD on the XRP Ledger Testnet.**
 
 Built for **ECO5040W — Financial Software Engineering**, University of Cape Town (2026 Class Project).
 
@@ -9,14 +9,19 @@ Built for **ECO5040W — Financial Software Engineering**, University of Cape To
 ## Overview
 
 CrossFX lets a sender in South Africa remit ZAR to a recipient who receives the equivalent
-value as RLUSD in a custodial web wallet. The recipient can hold the RLUSD or request a
+value as UCTUSD in a custodial web wallet. The recipient can hold the UCTUSD or request a
 simulated cash-out into USD or another supported fiat currency.
+
+UCTUSD is the lecturer-issued XRPL Testnet IOU the class settles in, standing in for RLUSD
+under the brief's "lecturer-approved test token" allowance. The issuer and currency code are
+configuration, not constants, so the settlement token can be changed without touching code —
+see the tech spec §15.
 
 This is an **academic prototype only** — no real customer funds, real remittances, or
 production blockchain credentials are used anywhere in this system.
 
 Core journey: register → mock KYC → add beneficiary → quote (FX rate + fees) → simulated
-ZAR cash-in → queued RLUSD settlement on XRPL Testnet → recipient wallet → simulated cash-out.
+ZAR cash-in → queued UCTUSD settlement on XRPL Testnet → recipient wallet → simulated cash-out.
 
 ## Team — Group 4
 
@@ -31,7 +36,7 @@ ZAR cash-in → queued RLUSD settlement on XRPL Testnet → recipient wallet →
 
 - **Backend:** Python, FastAPI
 - **Database:** PostgreSQL (SQLite for local dev)
-- **Blockchain:** XRP Ledger Testnet via `xrpl-py`, RLUSD (issued token, requires TrustSet)
+- **Blockchain:** XRP Ledger Testnet via `xrpl-py`, UCTUSD (issued token, requires TrustSet)
 - **Message queue:** Redis Streams (swap for RabbitMQ/Kafka if preferred)
 - **Auth:** JWT, passwords hashed with bcrypt
 - **Secrets:** Private keys encrypted at rest, encryption key stored separately from the DB
@@ -50,7 +55,7 @@ crossfx/
 │   │   ├── services/            # fx_rate, fee calc, xrpl integration, cash-in/cash-out
 │   │   └── security/            # password hashing, private-key encryption
 │   ├── worker/
-│   │   └── settlement_worker.py # Consumes queue, submits RLUSD transfers to XRPL Testnet
+│   │   └── settlement_worker.py # Consumes queue, submits UCTUSD transfers to XRPL Testnet
 │   ├── tests/
 │   ├── requirements.txt
 │   └── .env.example

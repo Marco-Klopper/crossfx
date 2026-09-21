@@ -32,8 +32,9 @@ from app.database import Base, get_db
 from app.main import app
 from app.models.beneficiary import Beneficiary
 from app.models.remittance import Remittance, RemittanceStatus
-from app.models.user import User
+from app.models.user import KYCStatus, User
 from app.models.wallet import PlatformWallet, PoolRole
+from app.services import cashin_cashout_service
 from app.security.encryption import encrypt_seed
 from app.security.hashing import hash_password
 from app.security.jwt import create_access_token
@@ -199,5 +200,147 @@ def remittance_factory(db_session, user_factory):
         db_session.commit()
         db_session.refresh(remittance)
         return remittance, sender, recipient
+
+    return _make
+
+
+# ---------------------------------------------------------------------------
+# Track 3 (FX, fees, remittance flow) fixtures
+# ---------------------------------------------------------------------------
+@pytest.fixture()
+def approved_user_factory(db_session, user_factory):
+    """
+    A user whose KYC has been approved. Track 3's sender endpoints are
+    gated on require_kyc_approved, so the plain `auth_headers` user —
+    who is NOT_STARTED — gets a 403 from all of them.
+    """
+
+    def _make(email="approved@example.com", **kwargs):
+        user = user_factory(email=email, **kwargs)
+        user.kyc_status = KYCStatus.APPROVED
+        db_session.commit()
+        db_session.refresh(user)
+        return user
+
+    return _make
+
+
+@pytest.fixture()
+def approved_auth_headers(approved_user_factory):
+    """(headers, user) for a KYC-approved sender."""
+    user = approved_user_factory(email="approved.sender@example.com")
+    return _auth_header(user), user
+
+
+@pytest.fixture()
+def beneficiary_factory(db_session):
+    """
+    beneficiary_factory(sender, contact=...) -> Beneficiary.
+
+    `contact` doubles as the recipient's login email: that is how the
+    settlement worker resolves who to credit (spec §9.1), so a test that
+    wants a settleable remittance must register a user under the same
+    address.
+    """
+
+    def _make(
+        sender,
+        contact="recipient@example.com",
+        full_name="Recipient Name",
+        country="United States",
+        preferred_payout_currency="USD",
+        relationship_to_sender="Brother",
+    ):
+        beneficiary = Beneficiary(
+            sender_id=sender.id,
+            full_name=full_name,
+            contact=contact,
+            country=country,
+            preferred_payout_currency=preferred_payout_currency,
+            relationship_to_sender=relationship_to_sender,
+        )
+        db_session.add(beneficiary)
+        db_session.commit()
+        db_session.refresh(beneficiary)
+        return beneficiary
+
+    return _make
+
+
+class FakeSettlementQueue:
+    """
+    Stands in for Redis Streams. Records what was published so a test can
+    assert the message carried only identifiers, and can be told to fail
+    so the "queue is down" branch is exercised without stopping a broker.
+    """
+
+    def __init__(self, fail_with: Exception | None = None) -> None:
+        self.published: list[tuple[str, str]] = []
+        self.fail_with = fail_with
+
+    def publish(self, idempotency_key, remittance_id) -> str:
+        if self.fail_with is not None:
+            raise self.fail_with
+        self.published.append((str(idempotency_key), str(remittance_id)))
+        return f"entry-{len(self.published)}"
+
+
+@pytest.fixture()
+def fake_queue(monkeypatch):
+    """
+    Replaces the SettlementQueue the cash-in path constructs, so the whole
+    suite still runs with no Redis (backend/README.md §8).
+    """
+    queue = FakeSettlementQueue()
+    monkeypatch.setattr(
+        cashin_cashout_service, "SettlementQueue", lambda: queue
+    )
+    return queue
+
+
+@pytest.fixture()
+def broken_queue(monkeypatch):
+    """A queue that refuses every publish."""
+    queue = FakeSettlementQueue(
+        fail_with=ConnectionError("Connection refused by localhost:6379")
+    )
+    monkeypatch.setattr(
+        cashin_cashout_service, "SettlementQueue", lambda: queue
+    )
+    return queue
+
+
+@pytest.fixture()
+def quote_factory(client, approved_auth_headers, beneficiary_factory, user_factory):
+    """
+    quote_factory(amount="1000.00", register_recipient=True)
+      -> (quote_body, headers, sender, beneficiary)
+
+    Posts a real /remittances/quote, so the row under test is one the API
+    actually produced rather than one hand-built to match.
+    """
+    counter = {"n": 0}
+
+    def _make(amount="1000.00", register_recipient=True, **beneficiary_kwargs):
+        headers, sender = approved_auth_headers
+        counter["n"] += 1
+        contact = beneficiary_kwargs.pop(
+            "contact", f"t3-recipient{counter['n']}@example.com"
+        )
+        if register_recipient:
+            user_factory(email=contact)
+        beneficiary = beneficiary_factory(
+            sender, contact=contact, **beneficiary_kwargs
+        )
+        response = client.post(
+            "/remittances/quote",
+            json={
+                "beneficiary_id": str(beneficiary.id),
+                "zar_send_amount": amount,
+            },
+            headers=headers,
+        )
+        assert response.status_code == 201, response.text
+        return response.json(), headers, sender, beneficiary
 
     return _make
