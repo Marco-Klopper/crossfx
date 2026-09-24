@@ -6,6 +6,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
 
+from app.schemas.common import UtcDatetime
+
 # Small allowlist rather than a free-text field: the brief scopes this
 # prototype to UCTUSD-denominated payouts and the fiat the corridor can
 # actually price.
@@ -62,4 +64,4 @@ class BeneficiaryRead(BaseModel):
     country: str
     preferred_payout_currency: str
     relationship_to_sender: str
-    created_at: datetime
+    created_at: UtcDatetime

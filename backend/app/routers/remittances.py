@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.dependencies import require_kyc_approved
+from app.dependencies import get_current_user, require_kyc_approved
 from app.models.beneficiary import Beneficiary
 from app.models.remittance import Remittance, RemittanceStatus
 from app.models.user import User
@@ -264,9 +264,18 @@ def confirm_cash_in(
 @router.get("/", response_model=list[RemittanceRead])
 def list_remittances(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_kyc_approved),
+    current_user: User = Depends(get_current_user),
 ):
-    """The authenticated sender's transaction history, newest first."""
+    """
+    The authenticated sender's transaction history, newest first.
+
+    get_current_user, not require_kyc_approved. Sending needs approved
+    KYC; reading what you have already sent does not. Gating this meant a
+    sender whose KYC was later rejected lost access to their own records
+    — including the ability to poll a transfer that was mid-settlement —
+    and it was why the frontend's default tab fired a guaranteed 403 on
+    every mount for anyone not yet approved.
+    """
     return (
         db.query(Remittance)
         .filter(Remittance.sender_id == current_user.id)
@@ -279,10 +288,13 @@ def list_remittances(
 def get_remittance_status(
     remittance_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_kyc_approved),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Current status, plus the XRPL transaction hash once it has settled.
     This is the endpoint a client polls after confirming cash-in.
+
+    Ownership is still enforced by _owned_remittance; only the KYC gate
+    is gone, for the reason given on list_remittances above.
     """
     return _owned_remittance(db, remittance_id, current_user.id)

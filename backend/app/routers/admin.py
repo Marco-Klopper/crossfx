@@ -38,6 +38,25 @@ def _get_application(db: Session, application_id: uuid.UUID) -> KYCApplication:
     return application
 
 
+def _applicant(db: Session, application: KYCApplication) -> User:
+    """
+    The user an application belongs to.
+
+    The foreign key makes a missing row all but impossible — but SQLite
+    does not enforce foreign keys by default, and both callers went
+    straight on to assign `user.kyc_status`, so the impossible case was
+    an AttributeError and a 500 rather than anything a reader could
+    diagnose.
+    """
+    user = db.get(User, application.user_id)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="The applicant for this KYC application no longer exists",
+        )
+    return user
+
+
 def _require_pending(application: KYCApplication) -> None:
     if application.status != ApplicationStatus.PENDING:
         raise HTTPException(
@@ -71,7 +90,7 @@ def approve_kyc(
     application.reviewed_by_admin_id = admin.id
     application.reviewed_at = datetime.now(timezone.utc)
 
-    user = db.get(User, application.user_id)
+    user = _applicant(db, application)
     user.kyc_status = KYCStatus.APPROVED
 
     db.commit()
@@ -94,7 +113,7 @@ def reject_kyc(
     application.reviewed_at = datetime.now(timezone.utc)
     application.rejection_reason = payload.reason
 
-    user = db.get(User, application.user_id)
+    user = _applicant(db, application)
     user.kyc_status = KYCStatus.REJECTED
 
     db.commit()

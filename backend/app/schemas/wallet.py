@@ -12,6 +12,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas.common import UtcDatetime
+
 
 class LedgerBalanceRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -41,4 +43,4 @@ class WalletTransactionRead(BaseModel):
     xrpl_tx_hash: str | None
     status: str
     failure_reason: str | None
-    created_at: datetime
+    created_at: UtcDatetime

@@ -1,6 +1,28 @@
 """
 Integration tests for routers/auth.py.
 """
+from decimal import Decimal
+
+import pytest
+
+from app.config import settings
+
+
+@pytest.fixture(autouse=True)
+def pinned_limits(monkeypatch):
+    """
+    Pins the configured limits for this module.
+
+    The assertions below name exact figures, and app/config.py loads
+    .env at import - so without this, editing VERIFIED_DAILY_LIMIT in a
+    developer's own .env broke tests that have nothing to do with the
+    change. Every other test module that asserts figures already pins
+    them this way.
+    """
+    monkeypatch.setattr(settings, "unverified_daily_limit", Decimal("0"))
+    monkeypatch.setattr(settings, "unverified_monthly_limit", Decimal("0"))
+    monkeypatch.setattr(settings, "verified_daily_limit", Decimal("3000"))
+    monkeypatch.setattr(settings, "verified_monthly_limit", Decimal("25000"))
 
 
 def _register(client, email="alice@example.com", password="password123", full_name="Alice"):
@@ -76,7 +98,12 @@ def test_me_returns_profile_and_limits(client, auth_headers):
     assert body["email"] == user.email
     assert body["kyc_status"] == "not_started"
     # Unverified users get the zero limits from app.config.settings.
-    assert body["limits"] == {"daily_limit_zar": 0.0, "monthly_limit_zar": 0.0}
+    # Decimal, serialised as a string - the API returns no float money.
+    assert body["limits"] == {
+        "daily_limit_zar": "0",
+        "monthly_limit_zar": "0",
+    }
+    assert body["is_admin"] is False
 
 
 def test_logout_is_honest_about_being_client_side(client):

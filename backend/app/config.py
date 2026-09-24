@@ -3,6 +3,8 @@ Centralised app configuration, loaded from environment variables (.env).
 Keep all "magic numbers" (fees, limits, margins) here so they stay configurable
 per the project brief's requirement that all fees/limits be configurable.
 """
+from decimal import Decimal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,7 +53,11 @@ class Settings(BaseSettings):
     # api   — a public FX endpoint, cached for fx_rate_cache_seconds
     # table — the latest row in the fx_rates table (scripts/seed_fx_rates.py)
     exchange_rate_source: str = "mock"
-    fixed_remittance_fee_zar: float = 25
+    # Decimal, not float: every one of these is money or a rate, and
+    # services already had to write Decimal(str(...)) at each use site to
+    # keep IEEE-754 out of the money path. Declaring them correctly here
+    # means the conversion is not something a new call site can forget.
+    fixed_remittance_fee_zar: Decimal = Decimal("25")
     percent_fee_bps: int = 150
     fx_margin_bps: int = 100
     cashout_fee_bps: int = 100
@@ -59,7 +65,7 @@ class Settings(BaseSettings):
     # The rate the mock oscillates around, and how far it may drift either
     # way. Both are config so a demo can be pinned to a flat rate by setting
     # the volatility to 0.
-    fx_mock_base_rate: float = 18.50
+    fx_mock_base_rate: Decimal = Decimal("18.50")
     fx_mock_volatility_bps: int = 150
 
     # Free, keyless USD-base endpoint: {"rates": {"ZAR": 18.42, ...}}. The
@@ -76,10 +82,10 @@ class Settings(BaseSettings):
     quote_ttl_minutes: int = 15
 
     # Remittance limits (ZAR)
-    unverified_daily_limit: float = 0
-    unverified_monthly_limit: float = 0
-    verified_daily_limit: float = 3000
-    verified_monthly_limit: float = 25000
+    unverified_daily_limit: Decimal = Decimal("0")
+    unverified_monthly_limit: Decimal = Decimal("0")
+    verified_daily_limit: Decimal = Decimal("3000")
+    verified_monthly_limit: Decimal = Decimal("25000")
 
     # Queue (Redis Streams — one of the brokers the brief names)
     queue_backend: str = "redis"

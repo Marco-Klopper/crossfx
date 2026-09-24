@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.remittance import CashOutStatus, RemittanceStatus
 from app.services.cashin_cashout_service import CASH_IN_METHODS, payout_currencies
+from app.schemas.common import UtcDatetime
 
 # A per-transaction ceiling well above any configured limit. It exists to
 # keep a typo ("100000000") out of Numeric(12, 2) rather than to enforce
@@ -74,7 +75,7 @@ class QuoteResponse(BaseModel):
     cash_out_fee_uctusd: Decimal
     estimated_payout_amount: Decimal
 
-    quote_expires_at: datetime
+    quote_expires_at: UtcDatetime
     limits: LimitHeadroom
 
 
@@ -118,10 +119,10 @@ class RemittanceRead(BaseModel):
     cash_in_method: str | None
     xrpl_tx_hash: str | None
 
-    created_at: datetime
-    quote_expires_at: datetime | None
-    cash_in_confirmed_at: datetime | None
-    settled_at: datetime | None
+    created_at: UtcDatetime
+    quote_expires_at: UtcDatetime | None
+    cash_in_confirmed_at: UtcDatetime | None
+    settled_at: UtcDatetime | None
 
 
 class CashInConfirmResponse(BaseModel):
@@ -165,6 +166,6 @@ class CashOutRead(BaseModel):
 
     failure_reason: str | None
 
-    requested_at: datetime
-    approved_at: datetime | None
-    completed_at: datetime | None
+    requested_at: UtcDatetime
+    approved_at: UtcDatetime | None
+    completed_at: UtcDatetime | None

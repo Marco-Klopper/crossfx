@@ -8,12 +8,25 @@ from decimal import Decimal
 
 import pytest
 
+from app.config import settings
 from app.services.ledger import Ledger
 
 
 @pytest.fixture()
 def ledger(db_session):
     return Ledger(db_session)
+
+
+@pytest.fixture(autouse=True)
+def pinned_currencies(monkeypatch):
+    """
+    Pins SUPPORTED_CURRENCIES for this module.
+
+    The balance assertions name the exact set, and app/config.py reads
+    .env at import - so adding a currency in a developer's own .env
+    failed tests here for a reason unrelated to the code under test.
+    """
+    monkeypatch.setattr(settings, "supported_currencies", "UCTUSD,USD,ZAR")
 
 
 class TestAuth:

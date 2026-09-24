@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.models.kyc import ApplicationStatus
 from app.models.user import KYCStatus
+from app.schemas.common import UtcDatetime
 
 MIN_APPLICANT_AGE_YEARS = 18
 
@@ -42,8 +43,8 @@ class KYCApplicationRead(BaseModel):
 
     id: uuid.UUID
     status: ApplicationStatus
-    submitted_at: datetime
-    reviewed_at: datetime | None = None
+    submitted_at: UtcDatetime
+    reviewed_at: UtcDatetime | None = None
     rejection_reason: str | None = None
 
 
