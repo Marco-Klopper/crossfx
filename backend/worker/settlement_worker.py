@@ -49,6 +49,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -507,10 +508,14 @@ class SettlementWorker:
 
         A Remittance points at a Beneficiary, which is contact details
         rather than an account — so the recipient is matched by
-        Beneficiary.contact against User.email. That is a known sharp
-        edge: a beneficiary who has not registered cannot be credited,
-        and one who registered under a different address than the
-        sender typed will not be found. 
+        Beneficiary.contact against User.email, case-insensitively.
+        That is a known sharp edge: a beneficiary who has not registered
+        cannot be credited. Matching without regard to case removes the
+        half of it that was merely a bug — "Alice@x.com" and
+        "alice@x.com" are one person — and BeneficiaryCreate now
+        validates the field as an email and stores it lowercase, so a
+        phone number can no longer be saved into a field only an email
+        lookup can resolve.
         """
         beneficiary = db.get(Beneficiary, remittance.beneficiary_id)
         if beneficiary is None:
@@ -519,7 +524,11 @@ class SettlementWorker:
             )
 
         recipient = (
-            db.query(User).filter(User.email == beneficiary.contact).first()
+            db.query(User)
+            .filter(
+                func.lower(User.email) == beneficiary.contact.strip().lower()
+            )
+            .first()
         )
         if recipient is None:
             raise SettlementError(

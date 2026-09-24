@@ -16,6 +16,7 @@ import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -149,6 +150,13 @@ def assert_recipient_registered(db: Session, remittance: Remittance) -> User:
     Resolved the same way worker/settlement_worker.py resolves it — by
     matching Beneficiary.contact against User.email — so a remittance that
     passes here is one the worker can actually settle.
+
+    The comparison is case-insensitive. New beneficiaries are stored
+    lowercase, but users registered before that and rows already in the
+    database are not, and an exact match meant "Alice@x.com" and
+    "alice@x.com" were different people — which surfaced as an
+    unexplained 409 at cash-in rather than anything a sender could act
+    on.
     """
     beneficiary = db.get(Beneficiary, remittance.beneficiary_id)
     if beneficiary is None:
@@ -156,7 +164,9 @@ def assert_recipient_registered(db: Session, remittance: Remittance) -> User:
             "This remittance has no beneficiary on record"
         )
     recipient = (
-        db.query(User).filter(User.email == beneficiary.contact).first()
+        db.query(User)
+        .filter(func.lower(User.email) == beneficiary.contact.strip().lower())
+        .first()
     )
     if recipient is None:
         raise RecipientNotRegisteredError(
