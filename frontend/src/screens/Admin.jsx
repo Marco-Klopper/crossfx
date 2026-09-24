@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import * as api from '../api'
-import { Alert, Badge, money, token, rate, when } from '../ui.jsx'
+import { Alert, Badge, amountIn, money, rate, when } from '../ui.jsx'
 
 /**
  * The administrator interface (brief §5, "administrator interface";
@@ -11,7 +11,7 @@ import { Alert, Badge, money, token, rate, when } from '../ui.jsx'
  * approving KYC, confirming that a sender's rand arrived, and releasing a
  * recipient's payout.
  */
-export default function Admin({ onKycReviewed }) {
+export default function Admin({ me, onKycReviewed }) {
   const [applications, setApplications] = useState([])
   const [cashOuts, setCashOuts] = useState([])
   const [remittanceId, setRemittanceId] = useState('')
@@ -20,6 +20,7 @@ export default function Admin({ onKycReviewed }) {
   const [notice, setNotice] = useState('')
   const [warning, setWarning] = useState('')
   const [busy, setBusy] = useState(false)
+  const [loaded, setLoaded] = useState(false)
 
   async function load() {
     try {
@@ -31,6 +32,8 @@ export default function Admin({ onKycReviewed }) {
       setCashOuts(outs)
     } catch (err) {
       setError(err.detail || err.message)
+    } finally {
+      setLoaded(true)
     }
   }
 
@@ -122,10 +125,22 @@ export default function Admin({ onKycReviewed }) {
       <div className="card">
         <h2>KYC review queue</h2>
         <p className="hint">
-          Pending applications. Approving one sets the sender's limits to
-          R3,000 daily and R25,000 monthly.
+          Pending applications. Approving one lifts the sender to the verified
+          limits. {/*
+            Read from the profile rather than written into the copy: the
+            limits are configuration (VERIFIED_*_LIMIT), so hard-coding
+            "R3,000 daily" made this sentence a lie the moment anyone changed
+            the .env it came from.
+          */}
+          {me?.is_admin && me?.limits
+            ? ` Yours are ${money(me.limits.daily_limit_zar)} daily and ${money(
+                me.limits.monthly_limit_zar,
+              )} monthly.`
+            : ''}
         </p>
-        {applications.length === 0 ? (
+        {!loaded ? (
+          <p className="empty">Loading…</p>
+        ) : applications.length === 0 ? (
           <p className="empty">Nothing waiting for review.</p>
         ) : (
           <div className="table-scroll">
@@ -181,7 +196,9 @@ export default function Admin({ onKycReviewed }) {
           the recipient asked — approving credits the fiat, rejecting refunds
           the token.
         </p>
-        {cashOuts.length === 0 ? (
+        {!loaded ? (
+          <p className="empty">Loading…</p>
+        ) : cashOuts.length === 0 ? (
           <p className="empty">No payouts waiting.</p>
         ) : (
           <div className="table-scroll">
@@ -201,9 +218,9 @@ export default function Admin({ onKycReviewed }) {
                 {cashOuts.map((row) => (
                   <tr key={row.id}>
                     <td>{when(row.requested_at)}</td>
-                    <td className="num">{Number(row.uctusd_amount).toFixed(6)}</td>
+                    <td className="num">{amountIn(row.uctusd_amount, 'UCTUSD')}</td>
                     <td className="num">
-                      {Number(row.cash_out_fee_uctusd).toFixed(6)}
+                      {amountIn(row.cash_out_fee_uctusd, 'UCTUSD')}
                     </td>
                     <td className="num">{rate(row.fx_rate_used)}</td>
                     <td className="num">

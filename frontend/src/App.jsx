@@ -23,12 +23,12 @@ export default function App() {
   const [booting, setBooting] = useState(true)
 
   /**
-   * Reloads the profile, and works out whether this account is an admin.
+   * Reloads the profile.
    *
-   * GET /auth/me deliberately does not return is_admin (backend
-   * app/schemas/user.py), so admin-ness is detected by asking for the KYC
-   * review queue and treating a 403 as "not an admin". That keeps the check
-   * on the frontend rather than changing another track's schema.
+   * GET /auth/me now returns is_admin. It previously did not, and admin-ness
+   * was inferred by calling GET /admin/kyc/applications and reading a 403 as
+   * "no" — which fetched the whole KYC table as a permission probe on every
+   * refresh, and hid the Admin tab whenever that request merely failed.
    */
   const refresh = useCallback(async () => {
     if (!api.isLoggedIn()) {
@@ -37,17 +37,12 @@ export default function App() {
       return
     }
     try {
-      setMe(await api.getMe())
+      const profile = await api.getMe()
+      setMe(profile)
+      setIsAdmin(Boolean(profile.is_admin))
     } catch {
       // The token was rejected; api.js has already cleared it.
       setMe(null)
-      setIsAdmin(false)
-      return
-    }
-    try {
-      await api.listKycApplications()
-      setIsAdmin(true)
-    } catch {
       setIsAdmin(false)
     }
   }, [])
@@ -125,7 +120,7 @@ export default function App() {
         {tab === 'wallet' && <Wallet />}
         {tab === 'beneficiaries' && <Beneficiaries />}
         {tab === 'kyc' && <Kyc me={me} onReviewed={refresh} />}
-        {tab === 'admin' && <Admin onKycReviewed={refresh} />}
+        {tab === 'admin' && <Admin me={me} onKycReviewed={refresh} />}
       </main>
     </>
   )

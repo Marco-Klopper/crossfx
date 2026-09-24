@@ -1,7 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 
 import * as api from '../api'
-import { Alert, Badge, Line, TxHash, money, rate, token, when } from '../ui.jsx'
+import {
+  Alert,
+  Badge,
+  Line,
+  TxHash,
+  amountIn,
+  money,
+  rate,
+  token,
+  when,
+} from '../ui.jsx'
 
 /**
  * The sender's journey: quote → confirm cash-in → watch it settle
@@ -12,6 +22,9 @@ import { Alert, Badge, Line, TxHash, money, rate, token, when } from '../ui.jsx'
  * first would advertise a rate the sender does not actually get, and only the
  * second would hide how the price was built.
  */
+// Statuses a remittance will not move on from by itself.
+const TERMINAL = ['settled', 'failed', 'refunded']
+
 const METHODS = [
   { id: 'agent_cash', label: 'Cash at an agent' },
   { id: 'bank_transfer', label: 'Bank transfer (EFT)' },
@@ -20,6 +33,11 @@ const METHODS = [
 
 // Settlement is asynchronous, so the status is polled rather than pushed.
 const POLL_MS = 3000
+// Stop after roughly five minutes. The poll had no limit at all, so a
+// remittance stuck in `settling` — which, before the worker could reclaim an
+// abandoned message, was a state it could genuinely never leave — kept a timer
+// firing every three seconds for as long as the tab stayed open.
+const MAX_POLLS = 100
 
 export default function Send({ me }) {
   const [beneficiaries, setBeneficiaries] = useState([])
@@ -35,8 +53,13 @@ export default function Send({ me }) {
   const [warning, setWarning] = useState('')
   const [busy, setBusy] = useState(false)
   const [history, setHistory] = useState([])
+  // Every list on this screen rendered its empty state before the first
+  // response arrived, so a sender with recipients was briefly told to go and
+  // add one.
+  const [loaded, setLoaded] = useState(false)
 
-  const pollRef = useRef(null)
+  const pollCount = useRef(0)
+  const [pollExhausted, setPollExhausted] = useState(false)
 
   async function loadHistory() {
     try {
@@ -47,32 +70,41 @@ export default function Send({ me }) {
   }
 
   useEffect(() => {
-    api
-      .listBeneficiaries()
-      .then((rows) => {
-        setBeneficiaries(rows)
-        if (rows.length > 0) setBeneficiaryId(rows[0].id)
-      })
-      .catch((err) => setError(err.detail || err.message))
-    loadHistory()
+    Promise.all([
+      api
+        .listBeneficiaries()
+        .then((rows) => {
+          setBeneficiaries(rows)
+          if (rows.length > 0) setBeneficiaryId(rows[0].id)
+        })
+        .catch((err) => setError(err.detail || err.message)),
+      loadHistory(),
+    ]).finally(() => setLoaded(true))
   }, [])
 
   // Poll the tracked remittance until it reaches a terminal state. Cleared on
   // unmount so a tab switch does not leave a timer running.
   useEffect(() => {
     if (!tracked) return undefined
-    if (tracked.status === 'settled' || tracked.status === 'failed') {
+    if (TERMINAL.includes(tracked.status)) {
       loadHistory()
       return undefined
     }
-    pollRef.current = setTimeout(async () => {
+    if (pollCount.current >= MAX_POLLS) {
+      setPollExhausted(true)
+      return undefined
+    }
+    // The id is held in a local rather than read back out of the ref on
+    // cleanup, so an earlier cleanup can only ever cancel its own timer.
+    const timer = setTimeout(async () => {
+      pollCount.current += 1
       try {
         setTracked(await api.getRemittance(tracked.id))
       } catch {
         // A transient read failure should not kill the poll loop.
       }
     }, POLL_MS)
-    return () => clearTimeout(pollRef.current)
+    return () => clearTimeout(timer)
   }, [tracked])
 
   async function getQuote(event) {
@@ -103,6 +135,8 @@ export default function Send({ me }) {
     setBusy(true)
     try {
       const result = await api.confirmCashIn(quote.remittance_id, method)
+      pollCount.current = 0
+      setPollExhausted(false)
       setTracked(result.remittance)
       setQuote(null)
       if (result.queued) {
@@ -157,7 +191,9 @@ export default function Send({ me }) {
           <Alert kind="success">{notice}</Alert>
           <Alert kind="warn">{warning}</Alert>
 
-          {beneficiaries.length === 0 ? (
+          {!loaded ? (
+            <p className="empty">Loading…</p>
+          ) : beneficiaries.length === 0 ? (
             <Alert kind="info">
               Add a recipient first — see the Recipients tab.
             </Alert>
@@ -290,6 +326,13 @@ export default function Send({ me }) {
             The transfer is queued and settled by a background worker, so this
             updates on its own.
           </p>
+          {pollExhausted && (
+            <Alert kind="warn">
+              Still not settled after several minutes. Nothing is lost — reopen
+              this tab or check the history below, and an administrator can
+              retry or refund it.
+            </Alert>
+          )}
           <div className="breakdown">
             <Line
               label="Status"
@@ -308,7 +351,9 @@ export default function Send({ me }) {
 
       <div className="card">
         <h2>Your transfers</h2>
-        {history.length === 0 ? (
+        {!loaded ? (
+          <p className="empty">Loading…</p>
+        ) : history.length === 0 ? (
           <p className="empty">Nothing sent yet.</p>
         ) : (
           <div className="table-scroll">
@@ -330,7 +375,7 @@ export default function Send({ me }) {
                     <td>{when(row.created_at)}</td>
                     <td className="num">{money(row.zar_send_amount)}</td>
                     <td className="num">{rate(row.fx_rate_used)}</td>
-                    <td className="num">{Number(row.uctusd_amount).toFixed(6)}</td>
+                    <td className="num">{amountIn(row.uctusd_amount, 'UCTUSD')}</td>
                     <td>{row.cash_in_method || '—'}</td>
                     <td>
                       <Badge status={row.status} />

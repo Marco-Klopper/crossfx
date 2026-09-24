@@ -46,8 +46,24 @@ export default function Kyc({ me, onReviewed }) {
     load()
   }, [])
 
+  // Keep the prefilled identity fields in step with the session. They were
+  // seeded at mount only, so a profile refresh that did not remount this
+  // screen left a stale name and email in the form.
+  useEffect(() => {
+    setForm((previous) => ({
+      ...previous,
+      fullName: previous.fullName || me.full_name,
+      email: previous.email || me.email,
+    }))
+  }, [me.full_name, me.email])
+
   function set(field) {
-    return (event) => setForm({ ...form, [field]: event.target.value })
+    // Functional, so browser autofill firing several fields in one tick
+    // cannot drop all but the last.
+    return (event) => {
+      const { value } = event.target
+      setForm((previous) => ({ ...previous, [field]: value }))
+    }
   }
 
   async function submit(event) {
