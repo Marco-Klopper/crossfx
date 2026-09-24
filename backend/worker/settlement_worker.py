@@ -395,42 +395,46 @@ class SettlementWorker:
         `reason` is an XRPL result code or an internal message.
         """
         db.rollback()
-        remittance = db.get(Remittance, remittance.id)
-        remittance.status = RemittanceStatus.FAILED
-
-        if recipient is not None:
-            ledger = Ledger(db)
-            ledger.record_external(
-                ledger.wallet_for(recipient),
-                Direction.INCOMING,
-                fee_service.SETTLEMENT_CURRENCY,
-                Decimal(remittance.uctusd_amount),
-                remittance_id=remittance.id,
-                status=EntryStatus.FAILED,
-                failure_reason=reason[:500],
-            )
+        remittance_id = remittance.id
 
         try:
+            remittance = db.get(Remittance, remittance_id)
+            remittance.status = RemittanceStatus.FAILED
+
+            if recipient is not None:
+                ledger = Ledger(db)
+                ledger.record_external(
+                    ledger.wallet_for(recipient),
+                    Direction.INCOMING,
+                    fee_service.SETTLEMENT_CURRENCY,
+                    Decimal(remittance.uctusd_amount),
+                    remittance_id=remittance.id,
+                    status=EntryStatus.FAILED,
+                    failure_reason=reason[:500],
+                )
             db.commit()
         except IntegrityError:
             # uq_wallet_tx_remittance_direction_status already holds a
             # failed incoming entry for this remittance — this is its
-            # second failure, after an admin retried it. The entry is a
-            # record that an attempt failed, and one is enough; what
-            # must not happen is this raising, because _fail is the
-            # worker's own error handler and an exception here escaped
-            # all the way out of run() and killed the process.
+            # second failure, after an admin retried it. One record that
+            # an attempt failed is enough.
+            #
+            # The whole block is guarded rather than just the commit,
+            # because Ledger flushes as it writes: the violation surfaces
+            # from record_external, not from db.commit(). _fail is the
+            # worker's own error handler, so an exception escaping here
+            # went all the way out of run() and killed the process.
             db.rollback()
-            remittance = db.get(Remittance, remittance.id)
+            remittance = db.get(Remittance, remittance_id)
             remittance.status = RemittanceStatus.FAILED
             db.commit()
             logger.warning(
                 "Settlement for %s failed again; the existing failed entry "
                 "stands",
-                remittance.id,
+                remittance_id,
             )
 
-        logger.error("Settlement failed for %s: %s", remittance.id, reason)
+        logger.error("Settlement failed for %s: %s", remittance_id, reason)
         return SettlementOutcome.FAILED
 
     # lookups

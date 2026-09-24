@@ -9,6 +9,7 @@ from decimal import Decimal
 import pytest
 
 from app.config import settings
+from app.schemas.wallet import WalletBalanceRead, WalletTransactionRead
 from app.services.ledger import Ledger
 
 
@@ -155,14 +156,52 @@ class TestTransactions:
 
 class TestKeyMaterial:
     @pytest.mark.parametrize(
-        "path", ["/wallet/balance", "/wallet/transactions"]
+        "path,model",
+        [
+            ("/wallet/balance", WalletBalanceRead),
+            ("/wallet/transactions", WalletTransactionRead),
+        ],
     )
-    def test_exposes_no_seed_or_address(self, client, auth_headers, path):
+    def test_returns_only_the_declared_fields(
+        self, client, auth_headers, pool_wallets, path, model
+    ):
         """
         Under pooled custody a user has no XRPL identity, and the brief
         forbids ever returning key material.
+
+        Asserted against the declared response model rather than by
+        searching the body for the string "seed". That substring check
+        passed for anything leaked under a key not containing the word --
+        `secret`, `sk`, `signing_key` -- and would have failed falsely the
+        first time a user's address or a beneficiary's name contained it.
+        Pinning the key set is the assertion that actually holds: a field
+        added to a schema by mistake fails here.
+        """
+        headers, _ = auth_headers
+        response = client.get(path, headers=headers)
+        assert response.status_code == 200
+
+        allowed = set(model.model_fields)
+        payload = response.json()
+        rows = payload if isinstance(payload, list) else [payload]
+        for row in rows:
+            assert set(row) <= allowed, (
+                f"{path} returned undeclared field(s) {set(row) - allowed}"
+            )
+
+    @pytest.mark.parametrize(
+        "path", ["/wallet/balance", "/wallet/transactions"]
+    )
+    def test_never_leaks_a_pool_seed(
+        self, client, auth_headers, pool_wallets, path
+    ):
+        """
+        The complementary check, and the one with teeth: the actual
+        encrypted seeds and pool addresses exist in this database, so
+        look for those exact values rather than for a word.
         """
         headers, _ = auth_headers
         body = client.get(path, headers=headers).text
-        assert "seed" not in body.lower()
-        assert "xrpl_address" not in body
+        for wallet in pool_wallets:
+            assert wallet.xrpl_encrypted_seed not in body
+            assert wallet.xrpl_address not in body

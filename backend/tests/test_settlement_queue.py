@@ -4,7 +4,7 @@ settlement queue. The Redis client is injected, so these run without a
 broker.
 """
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import create_autospec
 
 import pytest
 import redis
@@ -17,7 +17,14 @@ GROUP = "test-settlement-workers"
 
 @pytest.fixture()
 def client():
-    return MagicMock()
+    """
+    A fake Redis, specced against the real class.
+
+    A bare MagicMock accepts any call signature, so a renamed or
+    re-ordered argument on xadd/xreadgroup/xack would leave every test in
+    this module green while production broke.
+    """
+    return create_autospec(redis.Redis, instance=True)
 
 
 @pytest.fixture()
@@ -115,3 +122,59 @@ class TestAcknowledge:
     def test_acks_in_the_group(self, queue, client):
         queue.acknowledge("1700000000-0")
         client.xack.assert_called_once_with(STREAM, GROUP, "1700000000-0")
+
+
+class TestReclaimStale:
+    """
+    XAUTOCLAIM, which is how a live worker takes over messages a dead one
+    was still holding. read_pending only ever sees the calling consumer's
+    own pending list, and a consumer name carries its PID — so without
+    this, a crashed worker's in-flight messages had nobody left to claim
+    them and at-least-once delivery quietly became at-most-once for
+    exactly the messages that mattered.
+    """
+
+    def test_it_asks_for_messages_idle_longer_than_the_threshold(
+        self, queue, client
+    ):
+        client.xautoclaim.return_value = ("0-0", [], [])
+
+        queue.reclaim_stale("worker-2", 60_000)
+
+        client.xautoclaim.assert_called_once_with(
+            name=STREAM,
+            groupname=GROUP,
+            consumername="worker-2",
+            min_idle_time=60_000,
+            count=10,
+        )
+
+    def test_it_returns_the_entries_in_the_readers_shape(self, queue, client):
+        entries = [("5-0", {"idempotency_key": "k", "remittance_id": "r"})]
+        client.xautoclaim.return_value = ("0-0", entries, [])
+
+        assert queue.reclaim_stale("worker-2", 60_000) == entries
+
+    def test_it_tolerates_a_two_element_response(self, queue, client):
+        """Older redis-py returns (cursor, entries) with no deleted list."""
+        entries = [("5-0", {"idempotency_key": "k"})]
+        client.xautoclaim.return_value = ("0-0", entries)
+
+        assert queue.reclaim_stale("worker-2", 60_000) == entries
+
+    def test_nothing_to_reclaim_is_an_empty_list(self, queue, client):
+        client.xautoclaim.return_value = ("0-0", [], [])
+        assert queue.reclaim_stale("worker-2", 60_000) == []
+
+    def test_a_server_without_xautoclaim_does_not_stop_the_worker(
+        self, queue, client
+    ):
+        """
+        Reclaiming is recovery, not the happy path. A worker on a Redis
+        too old to support it should still start and settle.
+        """
+        client.xautoclaim.side_effect = redis.ResponseError(
+            "ERR unknown command 'XAUTOCLAIM'"
+        )
+
+        assert queue.reclaim_stale("worker-2", 60_000) == []
