@@ -23,10 +23,24 @@ from app.services.cashin_cashout_service import CASH_IN_METHODS, payout_currenci
 # policy — policy is UNVERIFIED_*/VERIFIED_* in .env (spec §6).
 MAX_SEND_AMOUNT_ZAR = Decimal("1000000.00")
 
+# The same idea for the cash-out leg. Without an upper bound, a value like
+# "1e1000" is accepted by Decimal and then blows up inside
+# fee_service._token()'s quantize() as decimal.InvalidOperation — which
+# routers/wallet.py does not catch, so it surfaced as a 500 on a money
+# endpoint. The ceiling matches the column, Numeric(18, 6).
+MAX_CASH_OUT_UCTUSD = Decimal("1000000000000.000000")
+
 
 class QuoteRequest(BaseModel):
     beneficiary_id: uuid.UUID
-    zar_send_amount: Decimal = Field(gt=0, le=MAX_SEND_AMOUNT_ZAR)
+    # decimal_places is load-bearing, not cosmetic: the limit check in
+    # routers/remittances.py runs against the value as submitted, while
+    # the row stores fee_service._fiat() of it. Accepting "1000.999"
+    # therefore checked 1000.999 against the sender's headroom and then
+    # charged them 1001.00 — two different numbers for one request.
+    zar_send_amount: Decimal = Field(
+        gt=0, le=MAX_SEND_AMOUNT_ZAR, max_digits=12, decimal_places=2
+    )
 
 
 class LimitHeadroom(BaseModel):
@@ -120,7 +134,9 @@ class CashInConfirmResponse(BaseModel):
 
 
 class CashOutRequest(BaseModel):
-    uctusd_amount: Decimal = Field(gt=0)
+    uctusd_amount: Decimal = Field(
+        gt=0, le=MAX_CASH_OUT_UCTUSD, max_digits=18, decimal_places=6
+    )
     payout_currency: str
 
     @field_validator("payout_currency")

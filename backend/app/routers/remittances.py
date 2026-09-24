@@ -104,6 +104,16 @@ def create_quote(
     now = datetime.now(timezone.utc)
     rate = _current_rate(db)
 
+    # Serialise the check-then-insert below against this sender's other
+    # in-flight quotes. Without the lock, two concurrent POSTs both read
+    # the same running totals, both pass assert_within_limits, and both
+    # insert — so a sender clears a regulatory limit by firing N requests
+    # in parallel. Locking the sender's own users row is the narrowest
+    # thing that serialises them, and it is the same with_for_update()
+    # idiom services/ledger.py uses on balance rows. Like that one it is
+    # a no-op on SQLite and does real work on Postgres.
+    db.query(User).filter(User.id == current_user.id).with_for_update().first()
+
     try:
         usage = assert_within_limits(
             db, current_user, payload.zar_send_amount, now

@@ -24,6 +24,7 @@ import enum
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -80,10 +81,37 @@ class Ledger:
             self.db.query(Wallet).filter(Wallet.user_id == user.id).first()
         )
         if wallet is None:
-            wallet = Wallet(user_id=user.id)
-            self.db.add(wallet)
-            self.db.flush()
+            wallet = self._insert_or_reselect(
+                Wallet(user_id=user.id),
+                lambda: self.db.query(Wallet).filter(
+                    Wallet.user_id == user.id
+                ),
+            )
         return wallet
+
+    def _insert_or_reselect(self, row, reselect):
+        """
+        Inserts a row that a concurrent request may be inserting too.
+
+        `wallets.user_id` and `uq_ledger_balance_wallet_currency` are both
+        unique, so the SELECT-then-INSERT either side of this call is a
+        race: two first-time requests for the same user each see nothing,
+        each insert, and the loser gets an IntegrityError that used to
+        escape as a 500. The insert goes inside a SAVEPOINT so losing it
+        does not poison the caller's transaction — we simply roll back to
+        the savepoint and read the row the winner committed.
+        """
+        try:
+            with self.db.begin_nested():
+                self.db.add(row)
+                self.db.flush()
+            return row
+        except IntegrityError:
+            existing = reselect().first()
+            if existing is None:
+                # The insert failed for some reason other than the race.
+                raise
+            return existing
 
     # -- balance movements ----------------------------------------------
 
@@ -249,11 +277,15 @@ class Ledger:
             .first()
         )
         if row is None:
-            row = LedgerBalance(
-                wallet_id=wallet_id, currency=code, amount=Decimal("0")
+            row = self._insert_or_reselect(
+                LedgerBalance(
+                    wallet_id=wallet_id, currency=code, amount=Decimal("0")
+                ),
+                lambda: self.db.query(LedgerBalance).filter(
+                    LedgerBalance.wallet_id == wallet_id,
+                    LedgerBalance.currency == code,
+                ),
             )
-            self.db.add(row)
-            self.db.flush()
         return row
 
     def _move(

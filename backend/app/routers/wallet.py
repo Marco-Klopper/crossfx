@@ -7,6 +7,7 @@ multi-currency ledger, so everything here reads app.services.ledger
 rather than XRPL.
 """
 import uuid
+from decimal import InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -108,6 +109,16 @@ def request_cash_out(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except InvalidOperation as exc:
+        # Belt-and-braces. CashOutRequest now bounds uctusd_amount, so this
+        # should be unreachable — but an amount big enough to overflow
+        # Decimal.quantize() used to reach fee_service and surface as a 500
+        # on a money endpoint, and that must never be the failure mode.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"uctusd_amount is out of range: {exc}",
         ) from exc
 
     db.commit()
