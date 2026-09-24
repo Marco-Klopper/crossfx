@@ -19,7 +19,11 @@ from app.models.remittance import (
     RemittanceStatus,
 )
 from app.models.user import KYCStatus, User
-from app.schemas.kyc import AdminKYCApplicationRead, KYCApplicationRead, KYCReviewRequest
+from app.schemas.kyc import (
+    AdminKYCApplicationRead,
+    KYCApplicationRead,
+    KYCReviewRequest,
+)
 from app.schemas.remittance import (
     CashInConfirmRequest,
     CashInConfirmResponse,

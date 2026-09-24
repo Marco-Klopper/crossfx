@@ -127,7 +127,7 @@ export default function Beneficiaries() {
               <input id="b-name" value={form.fullName} onChange={set('fullName')} required />
             </div>
             <div className="field">
-              <label htmlFor="b-contact">Recipient's email address</label>
+              <label htmlFor="b-contact">Recipient&apos;s email address</label>
               <input
                 id="b-contact"
                 type="email"
@@ -184,7 +184,9 @@ export default function Beneficiaries() {
 
       <div className="card">
         <h2>Your recipients</h2>
-        {rows.length === 0 ? (
+        {!loaded ? (
+          <p className="empty">Loading…</p>
+        ) : rows.length === 0 ? (
           <p className="empty">No recipients yet.</p>
         ) : (
           <div className="table-scroll">

@@ -258,7 +258,7 @@ export default function Admin({ me, onKycReviewed }) {
       <div className="card">
         <h2>Mock payment service</h2>
         <p className="hint">
-          Confirms a sender's ZAR cash-in on their behalf. This is also the
+          Confirms a sender&apos;s ZAR cash-in on their behalf. This is also the
           retry for a remittance whose settlement message never reached the
           queue — republishing is safe, because the worker claims each
           remittance exactly once.

@@ -8,6 +8,7 @@ import {
   amountIn,
   money,
   rate,
+  token,
   when,
 } from '../ui.jsx'
 
@@ -97,7 +98,7 @@ export default function Wallet() {
             <small>UCTUSD</small>
           </p>
           <p className="hint">
-            Held in the platform's pooled custody and recorded in the internal
+            Held in the platform&apos;s pooled custody and recorded in the internal
             ledger.
           </p>
 

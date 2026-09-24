@@ -9,7 +9,6 @@ from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from xrpl.asyncio.transaction.reliable_submission import (
     XRPLReliableSubmissionException,
 )
@@ -107,9 +106,8 @@ class TestEstablishTrustline:
             side_effect=XRPLReliableSubmissionException(
                 "Transaction failed: tecNO_DST"
             ),
-        ):
-            with pytest.raises(XRPLTransactionError):
-                xrpl.establish_trustline("sSomeSeed")
+        ), pytest.raises(XRPLTransactionError):
+            xrpl.establish_trustline("sSomeSeed")
 
 
 class TestSendPayment:
@@ -144,9 +142,8 @@ class TestSendPayment:
             side_effect=XRPLReliableSubmissionException(
                 "Transaction failed: tecPATH_DRY"
             ),
-        ):
-            with pytest.raises(XRPLTransactionError) as exc_info:
-                xrpl.send_payment("sSenderSeed", "rDestination", "12.50")
+        ), pytest.raises(XRPLTransactionError) as exc_info:
+            xrpl.send_payment("sSenderSeed", "rDestination", "12.50")
 
         # The engine code is preserved for the failed remittance.
         assert exc_info.value.result_code == "tecPATH_DRY"
@@ -163,9 +160,8 @@ class TestSendPayment:
             module,
             "submit_and_wait",
             return_value=_tx_response(tx_result="tecUNFUNDED_PAYMENT"),
-        ):
-            with pytest.raises(XRPLTransactionError) as exc_info:
-                xrpl.send_payment("sSenderSeed", "rDestination", "12.50")
+        ), pytest.raises(XRPLTransactionError) as exc_info:
+            xrpl.send_payment("sSenderSeed", "rDestination", "12.50")
 
         assert exc_info.value.result_code == "tecUNFUNDED_PAYMENT"
 
@@ -211,9 +207,8 @@ class TestPooledCustodyLayer:
             side_effect=XRPLReliableSubmissionException(
                 "Transaction failed: tecPATH_DRY"
             ),
-        ):
-            with pytest.raises(XRPLTransactionError):
-                xrpl.send_pooled_payment(self._pool(), "rPayoutPool", "52.5")
+        ), pytest.raises(XRPLTransactionError):
+            xrpl.send_pooled_payment(self._pool(), "rPayoutPool", "52.5")
 
     def test_pool_trustline_uses_the_decrypted_seed(self, xrpl):
         pool = self._pool(seed="sEdPayoutPoolSeed")

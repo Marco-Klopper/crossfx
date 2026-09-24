@@ -124,7 +124,7 @@ class XRPLService:
 
     def _seed_for(self, platform_wallet) -> str:
         """
-        Decrypts a pooled wallet's seed. 
+        Decrypts a pooled wallet's seed.
         """
         return decrypt_seed(platform_wallet.xrpl_encrypted_seed)
 

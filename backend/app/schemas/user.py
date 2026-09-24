@@ -2,14 +2,12 @@
 Request/response shapes for auth.py and the /me profile endpoint.
 """
 import uuid
-from datetime import datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.models.user import KYCStatus
 from app.schemas.common import UtcDatetime
-
 
 # bcrypt hashes at most the first 72 bytes of a password and silently
 # discards the rest. At max_length=128 that meant someone who set a

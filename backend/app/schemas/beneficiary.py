@@ -2,9 +2,8 @@
 Request/response shapes for routers/beneficiaries.py.
 """
 import uuid
-from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.schemas.common import UtcDatetime
 

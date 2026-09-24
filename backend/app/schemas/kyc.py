@@ -5,7 +5,7 @@ app.models.kyc documents the ApplicationStatus <-> User.KYCStatus mapping that
 the admin approve/reject endpoints maintain; these schemas just carry the data.
 """
 import uuid
-from datetime import date, datetime
+from datetime import date
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 

@@ -7,7 +7,6 @@ transactions, transaction status, transaction date, and the XRP Ledger
 transaction hash.
 """
 import uuid
-from datetime import datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict

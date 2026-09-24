@@ -11,12 +11,18 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.models.user import KYCStatus, User
+from app.models.user import User
 from app.schemas.token import TokenResponse
-from app.schemas.user import MeResponse, TransactionLimits, UserLogin, UserRead, UserRegister
+from app.schemas.user import (
+    MeResponse,
+    TransactionLimits,
+    UserLogin,
+    UserRead,
+    UserRegister,
+)
 from app.security.hashing import hash_password, verify_password
-from app.services.limits_service import limits_for
 from app.security.jwt import create_access_token
+from app.services.limits_service import limits_for
 
 router = APIRouter()
 
@@ -93,7 +99,10 @@ def register(payload: UserRegister, db: Session = Depends(get_db)):
         # one would strand a legitimate user who had simply forgotten
         # they already signed up. Recorded in the tech spec's 15 as a
         # known limitation rather than papered over here.
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already registered",
+        ) from None
     db.refresh(user)
     return user
 

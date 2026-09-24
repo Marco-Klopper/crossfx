@@ -27,8 +27,9 @@ os.environ.setdefault(
     "UCTUSD_CURRENCY_CODE", "5543545553440000000000000000000000000000"
 )
 
-import pytest
 from decimal import Decimal
+
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -40,10 +41,10 @@ from app.models.beneficiary import Beneficiary
 from app.models.remittance import Remittance, RemittanceStatus
 from app.models.user import KYCStatus, User
 from app.models.wallet import PlatformWallet, PoolRole
-from app.services import cashin_cashout_service
 from app.security.encryption import encrypt_seed
 from app.security.hashing import hash_password
 from app.security.jwt import create_access_token
+from app.services import cashin_cashout_service
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -34,7 +34,9 @@ def get_current_user(
         user_id = uuid.UUID(subject)
     except (InvalidTokenError, ValueError):
         # ValueError covers a syntactically valid JWT whose 'sub' isn't a UUID.
-        raise credentials_error
+        # `from None`: the decode failure is not something a caller should see,
+        # and chaining it would put token internals in a traceback.
+        raise credentials_error from None
 
     user = db.get(User, user_id)
     if user is None:

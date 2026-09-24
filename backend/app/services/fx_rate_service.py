@@ -23,7 +23,7 @@ import hashlib
 import logging
 import threading
 import time
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 from sqlalchemy.orm import Session
@@ -85,7 +85,7 @@ def _mock_rate(now: float | None = None) -> Decimal:
     if volatility == 0:
         return _quantise(base)
 
-    bucket = int((now if now is not None else time.time())) // max(
+    bucket = int(now if now is not None else time.time()) // max(
         settings.fx_rate_cache_seconds, 1
     )
     digest = hashlib.sha256(str(bucket).encode()).digest()

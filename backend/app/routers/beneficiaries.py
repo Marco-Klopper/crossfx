@@ -40,12 +40,12 @@ def create_beneficiary(
     db.add(beneficiary)
     try:
         db.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A beneficiary with this contact already exists",
-        )
+        ) from exc
     db.refresh(beneficiary)
     return beneficiary
 

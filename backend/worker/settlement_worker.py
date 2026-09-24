@@ -433,7 +433,7 @@ class SettlementWorker:
         logger.error("Settlement failed for %s: %s", remittance.id, reason)
         return SettlementOutcome.FAILED
 
-    # lookups 
+    # lookups
 
     @staticmethod
     def _remittance_id(message: dict) -> uuid.UUID | None:

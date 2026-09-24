@@ -17,7 +17,7 @@ rate, which billed the same spread twice and made the disclosed
 fee plus the margin, and nothing else.
 """
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 
 from app.config import settings
 

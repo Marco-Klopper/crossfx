@@ -10,14 +10,13 @@ remaining limit headroom, which is what the quote screen needs to tell
 someone *why* their next send was refused.
 """
 import uuid
-from datetime import datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.remittance import CashOutStatus, RemittanceStatus
-from app.services.cashin_cashout_service import CASH_IN_METHODS, payout_currencies
 from app.schemas.common import UtcDatetime
+from app.services.cashin_cashout_service import CASH_IN_METHODS, payout_currencies
 
 # A per-transaction ceiling well above any configured limit. It exists to
 # keep a typo ("100000000") out of Numeric(12, 2) rather than to enforce
