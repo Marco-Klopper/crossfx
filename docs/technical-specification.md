@@ -8,9 +8,211 @@
 
 ## 1. Business Problem
 
+*Written by Track 4 (Frontend, Performance & Compliance Docs).*
+
+Remittances are one of the largest financial flows into developing economies,
+and one of the most expensive to send. The global average cost of sending the
+equivalent of USD 200 sits at roughly 6% of the amount — against a UN
+Sustainable Development Goal target of 3% — and sub-Saharan Africa is
+consistently the most expensive receiving region in the world. South Africa is
+the dominant sending country for the Southern African corridor: migrant workers
+from Zimbabwe, Malawi, Mozambique and Lesotho remit rand home regularly, in
+small amounts, where a fixed fee bites hardest.
+
+The cost is structural rather than greedy. A traditional transfer moves through
+a chain of intermediaries — the sending agent, its bank, one or more
+correspondent banks, the receiving institution, the payout agent — each taking a
+fee and each adding settlement delay. Correspondent banking requires
+pre-funded nostro accounts in the destination currency, which ties up capital
+and is priced back into the transfer. The result is a transfer that takes one to
+five business days and costs the sender between 5% and 15%, with much of that
+cost hidden inside the exchange rate rather than disclosed as a fee.
+
+Three problems follow, and CrossFX is a response to each:
+
+1. **Price opacity.** Most providers advertise "zero fees" and recover the
+   margin in a marked-up exchange rate, so the sender cannot tell what they
+   actually paid. CrossFX discloses the mid-market rate, the transaction fee and
+   the FX margin as three separate figures, plus the all-in effective rate the
+   sender is really paying (§4, §5.3).
+2. **Settlement latency and cost.** A stablecoin settles value between
+   corridor pools in seconds for a fraction of a cent, on a public ledger with a
+   verifiable transaction hash, rather than over a multi-day correspondent
+   chain. Section §9 implements exactly that leg.
+3. **Recipient access.** Many recipients are unbanked. A custodial web wallet
+   lets a recipient hold value and convert it to local fiat on their own
+   schedule, without needing a bank account (§9.1, §10).
+
+What a stablecoin does **not** solve is equally important, and the rest of this
+document is largely about it: cash-in and cash-out still require real fiat
+networks, liquidity still has to be funded somewhere, custody still has to be
+secured, and every one of the regulatory obligations in §14 still applies. The
+settlement instrument changes; the obligations do not.
+
+**Scope.** CrossFX is an academic prototype built to the ECO5040W brief. It
+moves no real customer money, holds no production credentials, and operates only
+on the XRP Ledger Testnet.
+
 ## 2. User Journey
 
+*Written by Track 4 (Frontend, Performance & Compliance Docs).*
+
+The brief's eleven-step journey, mapped to the screen the user is on, the API
+call behind it, and the state the remittance ends up in. Two people appear:
+**Thandi**, a sender in Cape Town, and **Blessing**, her brother, the recipient.
+
+| # | Step | Screen | Endpoint | Resulting state |
+|---|---|---|---|---|
+| 1 | Thandi registers and logs in | Register / Log in | `POST /auth/register`, `POST /auth/login` | `kyc_status = not_started` |
+| 2 | She completes mock KYC | KYC | `POST /kyc/apply` → admin `POST /admin/kyc/{id}/approve` | `kyc_status = approved`; limits become R3 000 / R25 000 |
+| 3 | She adds Blessing as a recipient | Recipients | `POST /beneficiaries/` | A `beneficiaries` row |
+| 4 | She enters R1 000 to send | Send money | *(client-side)* | — |
+| 5 | The platform retrieves the USD/ZAR rate | Send money | `fx_rate_service.get_usd_zar_rate` (§5) | Rate locked onto the quote |
+| 6 | Fees, margin, net and UCTUSD are calculated and shown | Quotation | `POST /remittances/quote` | `quoted`, expiring in 15 minutes |
+| 7 | She confirms a simulated ZAR cash-in | Quotation | `POST /remittances/{id}/confirm-cash-in` | `cash_in_confirmed` |
+| 8 | A settlement message is queued | *(none — server side)* | `SettlementQueue.publish` | `queued` |
+| 9 | A worker transfers UCTUSD on XRPL Testnet | *(none — worker process)* | `SettlementWorker.settle` | `settling` → `settled`, with an XRPL hash |
+| 10 | Blessing logs in and sees the UCTUSD | Wallet | `GET /wallet/balance`, `GET /wallet/transactions` | Ledger balance credited |
+| 11 | He requests a simulated cash-out | Wallet | `POST /wallet/cash-out` → admin `POST /admin/cash-outs/{id}/approve` | `requested` → `completed`; fiat credited |
+
+Three things about this journey are worth drawing out, because they are design
+decisions rather than mechanics:
+
+- **Steps 8 and 9 have no screen.** Once cash-in is confirmed, the sender's
+  request has returned; settlement happens behind the queue. The UI polls
+  `GET /remittances/{id}` and updates itself. This is the asynchronous boundary
+  the brief mandates, and §7.2 explains why the system is built around it.
+- **Step 2 is a hard gate.** An unverified sender's limit is R0, so the KYC
+  requirement is a consequence of the limit model rather than a separate rule
+  (§6). The send screen refuses to render a quote form until KYC is approved.
+- **Step 11 does not require Blessing to be KYC-approved.** Gating it would
+  make a recipient unable to touch money that is already theirs. In a real
+  corridor those checks belong to the payout partner in the destination country
+  — see §10.4, and §15, where it is recorded as the prototype's most
+  significant AML gap.
+
+**Failure paths the user actually sees.** A quote that expires before cash-in
+is refused with a `409` and the sender asked for a new one. A send that would
+breach a limit is refused with a `403` naming the period, the ceiling and the
+headroom left. A cash-in confirmed while the queue is down returns `200` with
+`queued: false` — the money was taken, so the UI shows a "confirmed, settling
+shortly" notice rather than an error, because telling a sender their payment
+failed invites them to pay twice (§8.2).
+
 ## 3. Functional Requirements
+
+*Written by Track 4 (Frontend, Performance & Compliance Docs).*
+
+Every requirement in the brief's Functional Scope, traced to where it is
+implemented. `FR-n` numbering is this document's own.
+
+### 3.1 User registration and login
+
+| | Requirement | Implementation |
+|---|---|---|
+| FR-1 | Register, log in, log out | `routers/auth.py`; JWT, 60-minute expiry |
+| FR-2 | Manage basic profile information | `GET /auth/me` |
+| FR-3 | View KYC status | `GET /auth/me`, `GET /kyc/status` |
+| FR-4 | View transaction limits | `GET /auth/me` returns the applicable pair (§6) |
+| FR-5 | View wallet balance and transaction history | `GET /wallet/balance`, `GET /wallet/transactions` |
+| FR-6 | Passwords securely hashed, never stored in plaintext | bcrypt via `passlib` (`security/hashing.py`, §13) |
+
+### 3.2 Mock KYC
+
+| | Requirement | Implementation |
+|---|---|---|
+| FR-7 | Collect the eight prescribed fields | `schemas/kyc.KYCApplicationCreate` — full name, date of birth, nationality, identification number, residential address, mobile number, email, source of funds |
+| FR-8 | An administrator may approve or reject | `POST /admin/kyc/{id}/approve`, `/reject` |
+| FR-9 | Only approved users may send | `require_kyc_approved` on every sender route, plus R0 limits (§6) |
+
+### 3.3 Beneficiary management
+
+| | Requirement | Implementation |
+|---|---|---|
+| FR-10 | Add and view beneficiaries | `POST`/`GET /beneficiaries/` |
+| FR-11 | Record name, contact, country, payout currency, relationship | `models/beneficiary.py`; `UNIQUE(sender_id, contact)` |
+
+### 3.4 Remittance limits
+
+| | Requirement | Implementation |
+|---|---|---|
+| FR-12 | Configurable daily and monthly limits | `VERIFIED_*` / `UNVERIFIED_*` in `.env` (§6) |
+| FR-13 | Reject a remittance that would exceed either | `limits_service.assert_within_limits` → `403` naming the period and headroom |
+
+### 3.5 Exchange rates and fees
+
+| | Requirement | Implementation |
+|---|---|---|
+| FR-14 | Use the USD/ZAR rate applicable when the transaction is created | Rate stored on the quote as `fx_rate_used`, honoured for `QUOTE_TTL_MINUTES` (§5.2) |
+| FR-15 | Support an API, a mock, or a rate table | All three, selected by `EXCHANGE_RATE_SOURCE` (§5) |
+| FR-16 | Quotation shows send amount, rate, fee, margin, UCTUSD received, cash-out fee, estimated payout | All seven returned by `POST /remittances/quote`, plus `effective_rate` (§4.2) |
+| FR-17 | Fixed fee, percentage fee, FX margin, cash-out fee | §4; four settings, no hardcoded numbers |
+| FR-18 | All fees configurable | `app/config.py`, sourced from `.env` |
+
+### 3.6 Simulated ZAR cash-in
+
+| | Requirement | Implementation |
+|---|---|---|
+| FR-19 | Simulate payment by agent cash, bank transfer or card | `cash_in_method` ∈ `agent_cash \| bank_transfer \| card` (§8) |
+| FR-20 | An administrator or mock payment service may confirm receipt | `POST /admin/remittances/{id}/confirm-payment` |
+| FR-21 | The UCTUSD transfer must not begin until cash-in is confirmed | Only `CASH_IN_CONFIRMED`/`QUEUED` are claimable by the worker (§9.5) |
+
+### 3.7 Custodial wallet
+
+| | Requirement | Implementation |
+|---|---|---|
+| FR-22 | Display balance, incoming, outgoing/cash-out, status, date, XRPL hash | `wallet_transactions` carries all six; rendered on the Wallet screen (§9.4) |
+| FR-23 | Choose per-user accounts or one platform wallet with an internal ledger | Pooled custody with an internal multi-currency ledger, justified in §9.1 |
+| FR-24 | Trust lines to the issuer | `XRPLService.establish_pool_trustline`, run once per pool at setup |
+
+### 3.8 XRPL Testnet integration
+
+| | Requirement | Implementation |
+|---|---|---|
+| FR-25 | Testnet account setup | `scripts/init_platform_wallets.py` |
+| FR-26 | Token transfer | `XRPLService.send_pooled_payment` |
+| FR-27 | Transaction signing | `xrpl-py` `submit_and_wait`, inside `XRPLService` only |
+| FR-28 | Transaction submission | as above |
+| FR-29 | Transaction-hash storage | `remittances.xrpl_tx_hash`, `wallet_transactions.xrpl_tx_hash` |
+| FR-30 | Successful transaction validation | `submit_and_wait` blocks for a validated ledger |
+| FR-31 | Failed-transaction handling | Non-`tesSUCCESS` → `XRPLTransactionError` → `FAILED` with the result code (§9.5) |
+
+### 3.9 Message queue
+
+| | Requirement | Implementation |
+|---|---|---|
+| FR-32 | Process transfers asynchronously through a message queue | Redis Streams consumer group (`services/settlement_queue.py`) |
+| FR-33 | The six-step confirm → queue → read → submit → record → credit flow | Mapped step by step in §9.3 |
+| FR-34 | Duplicate messages must not credit a recipient twice | Three independent mechanisms (§9.5) |
+
+### 3.10 Private-key security
+
+| | Requirement | Implementation |
+|---|---|---|
+| FR-35 | Keys in the database must be encrypted | Fernet ciphertext in `platform_wallets.xrpl_encrypted_seed` |
+| FR-36 | The encryption key must not live in that database | `PRIVATE_KEY_ENCRYPTION_KEY` in the environment |
+| FR-37 | Never returned via the API | `platform_wallets` is exposed by no route |
+| FR-38 | Never appear in logs | Failure paths record result codes only |
+| FR-39 | Never committed to source control | `.env` and `*.key` are gitignored |
+| FR-40 | Decrypted only by the signing component | `decrypt_seed` is called from exactly one function (§13) |
+
+### 3.11 Simulated cash-out
+
+| | Requirement | Implementation |
+|---|---|---|
+| FR-41 | Cash out to USD or a supported local currency | USD and ZAR (§10.3) |
+| FR-42 | Calculate the fiat amount at the applicable rate, less the cash-out fee | `fee_service.calculate_cash_out_payout` |
+| FR-43 | Status of requested / approved / completed / failed | `CashOutStatus`, all four (§10.1) |
+
+### 3.12 Non-functional
+
+| | Requirement | Implementation |
+|---|---|---|
+| FR-44 | Modular architecture on a Python framework | FastAPI, routers/services/models separation (§7) |
+| FR-45 | Relational SQL database | PostgreSQL, SQLite in development (§7.4) |
+| FR-46 | JSON API, optionally with interactive OpenAPI docs | FastAPI, Swagger UI at `/docs` |
+| FR-47 | Web front end | React + Vite SPA in `frontend/` |
+| FR-48 | Performance testing across six metrics | `performance-testing/`, all six reported |
 
 ## 4. Fee Model
 
@@ -268,7 +470,7 @@ flowchart TB
 
 | Brief component | Implementation | Track | State |
 |---|---|---|---|
-| Web front end | `frontend/` | 4 | Not started |
+| Web front end | `frontend/` — React + Vite SPA | 4 | Done — full sender and recipient journey, plus the admin screens |
 | REST API | `app/main.py` (FastAPI, CORS, `/docs`) | 1 | Done |
 | Relational database | PostgreSQL; SQLite for dev and CI | 1 | Done |
 | User and KYC module | `routers/auth.py`, `kyc.py`, `beneficiaries.py`, `models/user.py`, `kyc.py`, `beneficiary.py` | 1 | Done |
@@ -797,16 +999,171 @@ route at all (§13).
 
 ## 14. Regulatory Considerations
 
-- KYC / AML
-- Transaction monitoring
-- Customer transaction limits
-- Protection of customer information (POPIA)
-- Custody of crypto assets
-- Stablecoin / crypto-asset regulation
-- Foreign-exchange and capital-flow controls (SARB / Exchange Control Regulations)
-- Consumer protection
-- Safeguarding of customer funds
-- Licensing considerations for a real remittance service (e.g. FSCA, NPS Act, Reserve Bank authorisation)
+*Written by Track 4 (Frontend, Performance & Compliance Docs).*
+
+This is not a legal opinion. It is an account of which obligations a real
+South African remittance business would carry, what CrossFX implements towards
+each, and — more usefully for marking — what it does not. The organising point
+is the one the brief asks students to demonstrate: **settling in a stablecoin
+changes the instrument, not the obligations.** A cross-border transfer of value
+for a customer is a regulated activity in South Africa regardless of whether
+the rail is SWIFT or the XRP Ledger.
+
+### 14.1 KYC and anti-money-laundering
+
+The Financial Intelligence Centre Act 38 of 2001 (FICA) requires accountable
+institutions to identify and verify customers, keep records, and report to the
+Financial Intelligence Centre. Crypto asset service providers were added to
+FICA's Schedule 1 list of accountable institutions in December 2022, which
+settles the question for a business like this one: it would be an accountable
+institution.
+
+CrossFX collects the eight identity fields the brief prescribes and gates
+sending on administrator approval (§3.2). What it does not do is *verify* any
+of them — there is no check against the Department of Home Affairs, no document
+capture, no sanctions or politically-exposed-person screening, and no
+risk-based customer due diligence tiering. It also does not deduplicate on
+identification number, so one person can hold two accounts and two sets of
+limits (§15). A real deployment would need all of this before taking a
+customer.
+
+### 14.2 Transaction monitoring
+
+FICA obliges an accountable institution to report suspicious and unusual
+transactions, and cash threshold reports above the prescribed amount. That
+obligation is continuous, not a one-off check at onboarding: it requires
+monitoring patterns — structuring just under limits, unusual velocity, many
+senders paying one beneficiary.
+
+CrossFX has the raw material for this and none of the logic. Every remittance,
+ledger movement and cash-out is an immutable, timestamped, attributable record
+(§9.4), which is the hard part of building monitoring on top. But no rule
+engine, alerting or reporting exists, and nothing detects the structuring that
+the R3 000 daily limit would otherwise invite.
+
+### 14.3 Customer transaction limits
+
+Limits serve two masters: exchange control (§14.6) and AML risk appetite. The
+R3 000 daily and R25 000 monthly ceilings in §6 are the brief's illustrative
+figures, not derived from a regulation. They are enforced server-side, per
+sender, over a South African calendar day and month, and an unverified sender's
+ceiling is zero. The gap is that they are per *account* rather than per
+*identity* (§15) — which is exactly the weakness real KYC deduplication exists
+to close.
+
+### 14.4 Protection of customer information
+
+The Protection of Personal Information Act 4 of 2013 (POPIA) governs the
+identity data CrossFX collects, and §14.1's data set is precisely what POPIA
+treats as personal information. Section 19's requirement to secure the
+integrity and confidentiality of personal information through appropriate
+technical measures is the relevant one here.
+
+CrossFX partially meets this: passwords are bcrypt-hashed, transport would be
+HTTPS in deployment, authorisation failures return `404` rather than confirming
+that another user's record exists, and access is authenticated throughout.
+**It does not encrypt KYC PII at rest** — identification numbers and residential
+addresses are plain columns (§13). That is the prototype's clearest POPIA gap,
+and it is recorded rather than assumed away. POPIA's further obligations —
+purpose limitation, retention periods, data subject access and deletion rights,
+and breach notification to the Information Regulator — are not implemented at
+all.
+
+### 14.5 Custody of crypto assets and safeguarding of customer funds
+
+CrossFX holds customer value in two pooled XRPL accounts and records
+entitlements in an internal ledger (§9.1). This is the same shape as a
+money transfer operator holding pooled for-benefit-of accounts, and it carries
+the same core obligation: the pool must always cover the sum of customer
+claims. §9.6 states that invariant and gives the reconciliation check for it.
+
+Three real-world requirements are absent. First, **segregation**: customer
+funds should be legally separated from the operator's own, typically in a trust
+account, so customers rank ahead of general creditors on insolvency. CrossFX
+has no such separation — indeed it has no revenue account at all (§15).
+Second, **key management**: two Fernet-encrypted seeds with the key in an
+environment variable is appropriate for a prototype, but institutional custody
+would use an HSM or a multi-party-computation scheme with multiple signatories,
+so that no single compromise moves funds. Third, **the customer cannot verify
+their own holding** — their balance is a database row, not an on-chain position
+(§15). Pooled custody buys operational simplicity by requiring trust in the
+operator, which is the central trade-off of the whole design.
+
+### 14.6 Foreign exchange and capital-flow controls
+
+South Africa operates exchange control under the Currency and Exchanges Act 9
+of 1933 and the Exchange Control Regulations, administered by the SARB's
+Financial Surveillance Department. Cross-border transfers are made through
+Authorised Dealers (banks) or Authorised Dealers with Limited Authority
+(ADLAs), the category most money transfer operators fall into. Residents are
+subject to annual allowances — a single discretionary allowance and, with tax
+clearance, a larger foreign capital allowance — and every cross-border
+transaction must be reported to the SARB for balance-of-payments purposes,
+against a reporting category.
+
+This is where a stablecoin corridor is least settled and most consequential.
+Moving value out of South Africa as a crypto asset rather than as currency does
+not place it outside exchange control, and the treatment of crypto assets in
+this framework has been the subject of ongoing work by the Intergovernmental
+Fintech Working Group rather than a single settled rule. A real CrossFX would
+need ADLA authorisation or a sponsoring Authorised Dealer, would have to apply
+the allowance framework per customer, and would have to submit BoP reporting on
+every transfer.
+
+CrossFX implements none of this. It applies limits, but they are business
+limits rather than the statutory allowances, and it produces no regulatory
+reporting.
+
+### 14.7 Stablecoin and crypto-asset regulation
+
+The FSCA declared crypto assets a financial product under the Financial
+Advisory and Intermediary Services Act in October 2022, bringing crypto asset
+service providers into the FAIS licensing regime. The settlement asset itself
+matters too: a fiat-referenced stablecoin is a liability of its issuer, so a
+platform settling in one carries issuer credit risk and, in a production
+setting, would have to assess the issuer's reserve backing, attestation
+practice and its powers of freeze and clawback over holders' balances.
+
+CrossFX settles in UCTUSD, a lecturer-issued Testnet IOU, precisely because
+this is an academic exercise with no real value at stake (§15). The issuer and
+currency code are configuration rather than constants, which is the right
+shape: an operator that could not change settlement asset without a rewrite
+would be badly exposed to a single issuer.
+
+### 14.8 Consumer protection
+
+The Consumer Protection Act 68 of 2008 and the FSCA's market conduct framework
+require, among other things, that pricing be disclosed plainly and that
+customers not be misled. Remittance's characteristic conduct failure is
+advertising "no fees" while recovering the margin inside the exchange rate.
+
+This is the one area where CrossFX substantially *does* meet the standard, and
+deliberately so. The quotation discloses the mid-market rate, the transaction
+fee and the FX margin as separate lines, plus the all-in effective rate and the
+estimated amount the recipient will actually receive (§4.2, §5.3). Limit
+refusals name the limit and the headroom rather than failing opaquely. What is
+missing is the rest of the conduct apparatus: terms and conditions, a
+complaints and dispute-resolution process, an ombud scheme, and a mechanism
+for errors or reversals.
+
+### 14.9 Licensing
+
+Consolidating the above, a real CrossFX would need, at minimum: registration
+as an accountable institution under FICA; authorisation from the SARB's
+Financial Surveillance Department as an ADLA or a sponsoring relationship with
+an Authorised Dealer; an FSP licence from the FSCA for crypto asset services;
+and, depending on how it settles and whether it issues anything resembling
+e-money, engagement with the National Payment System Act 78 of 1998 framework,
+under which SARB restricts participation in the payment system and under which
+e-money may be issued only by banks. South Africa's greylisting by the FATF in
+2023 and the subsequent remediation effort also sharpened supervisory
+expectations on exactly this sector.
+
+None of this is obtainable by a student project, which is the honest summary of
+§14: CrossFX demonstrates the *technical* shape of a compliant remittance
+platform — identity, limits, auditability, disclosure, custody separation —
+while implementing essentially none of the *regulatory* obligations that would
+make it lawful to operate.
 
 ## 15. Assumptions and Limitations
 
@@ -872,3 +1229,51 @@ route at all (§13).
 - **Limits are enforced per user, not per identity.** Nothing stops one person
   registering twice under two email addresses and getting two sets of limits (§6).
   Real KYC deduplicates on identification number; this prototype's mock KYC does not.
+
+*Track 4's entries follow.*
+
+- **End-to-end settlement is demonstrated, but on a small sample.** Both pooled
+  wallets exist on Testnet with established trust lines, and 22 settlements were
+  submitted to the real ledger: 12 against an unfunded send pool, all correctly
+  rejected `tecPATH_DRY` and recorded as `FAILED` with no credit, and 10 after
+  the pool was funded, all `tesSUCCESS` with the recipients credited. The
+  reconciliation invariant in §9.6 was then verified to hold exactly — the payout
+  pool's on-chain balance equalled the sum of internal claims to six decimal
+  places. Both halves of the brief's XRPL requirement are therefore evidenced
+  against the live ledger rather than a mock, but 10 successes is a
+  demonstration, not a sustained soak test.
+- **Settlement liquidity is finite and manually replenished.** The send pool
+  was funded by a one-off transfer from the course distributor. Nothing in the
+  system monitors the pool balance, warns as it depletes, or refuses to quote a
+  remittance the pool could not actually settle — so under sustained use
+  CrossFX would keep accepting cash-in and then fail settlements with
+  `tecPATH_DRY`, exactly as the first 12 attempts did. A production corridor
+  would treat pool balance as a pre-quote precondition and alarm on it.
+- **The frontend stores its JWT in `localStorage`.** That is readable by any
+  script running on the page, so a cross-site scripting flaw would yield a
+  usable token. A production build would use an httpOnly, `Secure`,
+  `SameSite` cookie, with CSRF protection. The prototype accepts the risk
+  because it has no third-party scripts and runs only on localhost.
+- **The frontend infers admin status by probing an admin endpoint.**
+  `GET /auth/me` does not return `is_admin` (`schemas/user.py`), so the client
+  calls the KYC review queue once at login and treats a `403` as "not an
+  admin". This is cosmetic only — every admin route is enforced server-side by
+  `require_admin` — but it costs a request per login and is the wrong place for
+  the decision. The fix is one field on `MeResponse`.
+- **No automated frontend tests.** The backend has a substantial suite; the
+  React app has none. It was verified by driving the full journey manually and
+  by an end-to-end check against every endpoint the client calls.
+- **Performance figures are single-machine and single-worker.** Client, API,
+  worker, Redis and SQLite all shared one laptop, so the load generator
+  competed with the server for CPU and the measured ceiling of ~84 req/s
+  understates the API. The claim that settlement throughput scales with worker
+  count is architecturally sound (a Redis consumer group with competing
+  consumers) but was not measured with more than one worker.
+- **SQLite was never pushed to its limit.** The load tests ran against SQLite
+  and found no lock contention at 84 req/s, so the database was not the
+  bottleneck at this scale and the Postgres parity claimed in §7.4 remains
+  model-level rather than load-verified.
+- **Statutory references in §14 are stated as at the time of writing** and
+  should be checked against current sources before the document is relied on
+  for anything beyond this assignment. Regulation of crypto assets in South
+  Africa has moved repeatedly over the past several years and is still moving.

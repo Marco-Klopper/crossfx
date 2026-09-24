@@ -1,0 +1,472 @@
+/* CrossFX frontend styling.
+   One stylesheet, plain CSS, no framework: the marking is on what the app
+   does, and a build-time CSS toolchain is one more thing to break the night
+   before a demo. */
+
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-alt: #fafbfc;
+  --text: #11161c;
+  --muted: #5d6670;
+  --border: #e2e6ea;
+  --accent: #1f6feb;
+  --accent-text: #ffffff;
+  --success-bg: #e7f6ec;
+  --success-text: #10693a;
+  --warn-bg: #fdf3e2;
+  --warn-text: #92610a;
+  --danger-bg: #fdecea;
+  --danger-text: #b42318;
+  --info-bg: #e8f0fe;
+  --info-text: #1a4fb4;
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 3px rgba(16, 24, 40, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12151a;
+    --surface: #1a1f26;
+    --surface-alt: #20262e;
+    --text: #e8ecf1;
+    --muted: #98a2b0;
+    --border: #2b323b;
+    --accent: #4d90f0;
+    --accent-text: #0b0e12;
+    --success-bg: #13301f;
+    --success-text: #6ee7a0;
+    --warn-bg: #33270f;
+    --warn-text: #f5c669;
+    --danger-bg: #3a1a18;
+    --danger-text: #f8968c;
+    --info-bg: #16263f;
+    --info-text: #8fb6f5;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+/* -- layout --------------------------------------------------------------- */
+
+.app-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+}
+
+.app-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 14px 0;
+  flex-wrap: wrap;
+}
+
+.brand {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.2px;
+}
+
+.brand span {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 13px;
+  margin-left: 8px;
+}
+
+.session {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+nav.tabs {
+  display: flex;
+  gap: 4px;
+  max-width: 1040px;
+  margin: 0 auto;
+  overflow-x: auto;
+}
+
+nav.tabs button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  font-family: inherit;
+  padding: 10px 14px;
+  white-space: nowrap;
+}
+
+nav.tabs button:hover {
+  color: var(--text);
+}
+
+nav.tabs button.active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 560;
+}
+
+main {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 24px 24px 64px;
+}
+
+/* -- cards ---------------------------------------------------------------- */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  margin-bottom: 20px;
+  padding: 20px;
+}
+
+.card > h2 {
+  font-size: 16px;
+  font-weight: 620;
+  margin: 0 0 4px;
+}
+
+.card > h2 + .hint {
+  margin-top: 0;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 16px;
+}
+
+.grid-2 {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+
+/* -- forms ---------------------------------------------------------------- */
+
+label {
+  display: block;
+  font-size: 13px;
+  font-weight: 540;
+  margin-bottom: 5px;
+}
+
+input,
+select,
+textarea {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 9px 11px;
+  width: 100%;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  outline-offset: -1px;
+}
+
+.field {
+  margin-bottom: 14px;
+}
+
+.field-row {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+button.primary,
+button.secondary,
+button.danger {
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 540;
+  padding: 9px 16px;
+}
+
+button.primary {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--accent-text);
+}
+
+button.secondary {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+button.danger {
+  background: var(--danger-bg);
+  border: 1px solid transparent;
+  color: var(--danger-text);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+button.link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+/* -- messages ------------------------------------------------------------- */
+
+.alert {
+  border-radius: 8px;
+  font-size: 13.5px;
+  margin-bottom: 16px;
+  padding: 10px 13px;
+}
+
+.alert.error {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.alert.success {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.alert.info {
+  background: var(--info-bg);
+  color: var(--info-text);
+}
+
+.alert.warn {
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+
+/* -- badges --------------------------------------------------------------- */
+
+.badge {
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  padding: 2px 9px;
+  text-transform: uppercase;
+}
+
+.badge.neutral {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.badge.good {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.badge.pending {
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+
+.badge.bad {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.badge.info {
+  background: var(--info-bg);
+  color: var(--info-text);
+}
+
+/* -- tables --------------------------------------------------------------- */
+
+table {
+  border-collapse: collapse;
+  font-size: 13.5px;
+  width: 100%;
+}
+
+th {
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  padding: 8px 10px;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+td {
+  border-bottom: 1px solid var(--border);
+  padding: 10px;
+  vertical-align: middle;
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.empty {
+  color: var(--muted);
+  font-size: 13.5px;
+  padding: 18px 0;
+  text-align: center;
+}
+
+/* -- the quote breakdown -------------------------------------------------- */
+
+.breakdown {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.breakdown-row {
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+}
+
+.breakdown-row:last-child {
+  border-bottom: none;
+}
+
+.breakdown-row .label {
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.breakdown-row .value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 540;
+  white-space: nowrap;
+}
+
+.breakdown-row.deduct .value {
+  color: var(--danger-text);
+}
+
+.breakdown-row.total {
+  background: var(--surface-alt);
+}
+
+.breakdown-row.total .label,
+.breakdown-row.total .value {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+/* -- balance headline ----------------------------------------------------- */
+
+.balance {
+  font-size: 34px;
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.8px;
+  margin: 2px 0 2px;
+}
+
+.balance small {
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 500;
+  margin-left: 6px;
+}
+
+/* -- auth screen ---------------------------------------------------------- */
+
+.auth-wrap {
+  margin: 56px auto;
+  max-width: 420px;
+}
+
+.auth-wrap .brand {
+  display: block;
+  font-size: 26px;
+  margin-bottom: 4px;
+  text-align: center;
+}
+
+.auth-wrap .tagline {
+  color: var(--muted);
+  font-size: 13.5px;
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.switcher {
+  color: var(--muted);
+  font-size: 13.5px;
+  margin-top: 14px;
+  text-align: center;
+}
