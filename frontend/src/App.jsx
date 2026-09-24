@@ -56,6 +56,18 @@ export default function App() {
     refresh().finally(() => setBooting(false))
   }, [refresh])
 
+  // An expired token now returns the app to the login screen instead of
+  // leaving a shell mounted where every action fails. api.js clears the
+  // token; this is what tells React about it.
+  useEffect(() => {
+    api.setUnauthorizedHandler(() => {
+      setMe(null)
+      setIsAdmin(false)
+      setTab('send')
+    })
+    return () => api.setUnauthorizedHandler(null)
+  }, [])
+
   async function handleLogout() {
     await api.logout()
     setMe(null)

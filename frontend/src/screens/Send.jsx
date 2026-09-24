@@ -130,6 +130,15 @@ export default function Send({ me }) {
           {money(me.limits.daily_limit_zar)} until then. Open the KYC tab to
           apply.
         </Alert>
+        {/*
+          This branch used to render no error at all, so anything the mount
+          effect above set was written to state and never shown. The history
+          fetch was itself the usual cause: GET /remittances/ was gated on
+          approved KYC, so it returned 403 on every mount of the default tab
+          for exactly the users who land here. The backend no longer gates
+          reads that way, and whatever else goes wrong is now visible.
+        */}
+        <Alert kind="error">{error}</Alert>
       </div>
     )
   }

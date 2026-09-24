@@ -18,6 +18,7 @@ export default function Admin({ onKycReviewed }) {
 
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [warning, setWarning] = useState('')
   const [busy, setBusy] = useState(false)
 
   async function load() {
@@ -41,13 +42,19 @@ export default function Admin({ onKycReviewed }) {
   async function act(work, successMessage) {
     setError('')
     setNotice('')
+    setWarning('')
     setBusy(true)
     try {
-      await work()
-      setNotice(successMessage)
+      const outcome = await work()
+      // A string back from `work` is a caveat, not a failure -- see
+      // confirmPayment.
+      if (typeof outcome === 'string') setWarning(outcome)
+      else setNotice(successMessage)
       await load()
+      return true
     } catch (err) {
       setError(err.detail || err.message)
+      return false
     } finally {
       setBusy(false)
     }
@@ -62,7 +69,12 @@ export default function Admin({ onKycReviewed }) {
       () =>
         approve ? api.approveKyc(row.id) : api.rejectKyc(row.id, reason),
       `${row.full_name}'s application ${approve ? 'approved' : 'rejected'}.`,
-    ).then(onKycReviewed)
+    ).then((ok) => {
+      // Only refresh the session when the review actually landed. act()
+      // swallows its own errors, so an unconditional .then() called
+      // onKycReviewed even after a 409 or a 404.
+      if (ok) onKycReviewed()
+    })
   }
 
   function reviewCashOut(row, approve) {
@@ -81,11 +93,21 @@ export default function Admin({ onKycReviewed }) {
 
   function confirmPayment(event) {
     event.preventDefault()
+    const id = remittanceId.trim()
+    if (!id) {
+      setError('Enter a remittance ID.')
+      return
+    }
     act(
       async () => {
-        const result = await api.confirmPayment(remittanceId.trim())
-        if (!result.queued) throw new Error(result.detail)
+        const result = await api.confirmPayment(id)
         setRemittanceId('')
+        // `queued: false` means the cash-in WAS confirmed and only the queue
+        // was unreachable; it settles once the queue recovers. This used to
+        // throw, painting the success case red -- which is exactly what
+        // invites an admin to take the payment again. Send.jsx has always
+        // rendered the same response as a warning; this now matches it.
+        return result.queued ? undefined : result.detail
       },
       'Payment confirmed and queued for settlement.',
     )
@@ -95,6 +117,7 @@ export default function Admin({ onKycReviewed }) {
     <>
       <Alert kind="error">{error}</Alert>
       <Alert kind="success">{notice}</Alert>
+      <Alert kind="warn">{warning}</Alert>
 
       <div className="card">
         <h2>KYC review queue</h2>

@@ -34,6 +34,22 @@ export function isLoggedIn() {
   return Boolean(getToken())
 }
 
+/**
+ * Called when the API rejects our token.
+ *
+ * request() clears the stored token on a 401, but clearing it told React
+ * nothing: App kept `me` set, so the logged-in shell stayed mounted and every
+ * subsequent click failed with a red "Could not validate credentials" until
+ * the user thought to reload the page by hand. Access tokens last 60 minutes
+ * (backend/app/config.py), so a demo or a working session longer than that hit
+ * this every time. App registers a handler here and drops its session state.
+ */
+let onUnauthorized = () => {}
+
+export function setUnauthorizedHandler(handler) {
+  onUnauthorized = typeof handler === 'function' ? handler : () => {}
+}
+
 // -- the request layer -----------------------------------------------------
 
 /**
@@ -99,13 +115,30 @@ async function request(path, { method = 'GET', body, auth = true } = {}) {
   if (response.status === 204) return null
 
   const text = await response.text()
-  const payload = text ? JSON.parse(text) : null
+  let payload = null
+  try {
+    payload = text ? JSON.parse(text) : null
+  } catch {
+    // Not JSON. A 502 HTML page from a proxy, or an unhandled error rendered
+    // as text, used to throw a raw SyntaxError here -- which is not an
+    // ApiError, so screens reading `err.detail` rendered
+    // "Unexpected token '<'" at the user. Keep the body as the message when
+    // it is short enough to be one.
+    const snippet = text.trim().slice(0, 200)
+    throw new ApiError(
+      response.status,
+      response.ok
+        ? `The API returned a response this app could not read: ${snippet}`
+        : snippet || `Request failed (${response.status})`,
+    )
+  }
 
   if (!response.ok) {
     if (response.status === 401 && auth) {
       // The token is expired or invalid; drop it so the app returns to login
       // rather than looping on 401s with a token it will never use again.
       clearToken()
+      onUnauthorized()
     }
     throw new ApiError(response.status, messageFrom(payload, response.status))
   }
