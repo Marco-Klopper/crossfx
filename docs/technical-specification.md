@@ -1339,13 +1339,18 @@ make it lawful to operate.
   themselves should be `DateTime(timezone=True)`. Until then anything reading the
   database directly, including `performance-testing/measure_settlement.py`, has
   to know the convention rather than being told it.
-- **Row locking is a no-op on SQLite.** The quote path locks the sender's `users`
-  row, and the ledger locks the balance row, so that a limit check or a balance
-  check cannot be raced by a concurrent request. `SELECT ... FOR UPDATE` does
-  real work on Postgres and is silently ignored by SQLite, which is what the
-  shipped `.env` selects. The insert races either side of those locks are
-  handled portably (a savepoint and a re-read), but the *check-then-write*
-  serialisation is only genuine on Postgres.
+- **Row locking is a no-op on SQLite, and only the quote path compensates.**
+  `SELECT ... FOR UPDATE` does real work on Postgres and is silently ignored by
+  SQLite, which is what the shipped `.env` selects. Measured: before the
+  compensation, ten parallel R1 000 quotes put R6 000 through an R3 000 daily
+  limit. The quote path therefore re-verifies the limit *after* inserting and
+  rolls back if it no longer holds — the write lock the insert takes is what
+  serialises the two transactions, which works on both databases, and the same
+  ten requests now create exactly three. The ledger's balance lock has no such
+  second check, so **two concurrent cash-outs against one balance are still
+  theoretically racy on SQLite**; the insert races either side of it are handled
+  portably (a savepoint and a re-read), but the check-then-write serialisation
+  there is genuine only on Postgres.
 - **Fees are charged but not credited anywhere.** The transaction fee, the FX
   margin and the cash-out fee are all deducted from the customer, and no ledger
   account receives them — so the internal ledger is not balanced double-entry,

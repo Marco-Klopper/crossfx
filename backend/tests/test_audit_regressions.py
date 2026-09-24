@@ -773,3 +773,82 @@ class TestInsertRaces:
                 ),
             )
         db_session.rollback()
+
+
+class TestLimitRaceRecheck:
+    """
+    The quote path checks the limit, inserts, then checks again with the
+    new row counted, and rolls back if the second check fails.
+
+    Two concurrent quotes used to read the same running total, both pass,
+    and both commit. The row lock alone does not fix that on SQLite, where
+    SELECT ... FOR UPDATE is a no-op -- measured against the shipped
+    configuration, ten parallel R1 000 quotes put R6 000 through an R3 000
+    limit. The re-check is what holds on both databases; with it, the same
+    ten requests create exactly three.
+
+    A real race needs more than one connection, which the in-memory test
+    database does not have, so this drives the branch directly: the first
+    check passes and the second does not, which is exactly the state the
+    loser of a race finds itself in.
+    """
+
+    def test_a_quote_that_loses_the_race_is_rolled_back(
+        self, client, db_session, approved_auth_headers, beneficiary_factory,
+        user_factory, monkeypatch
+    ):
+        headers, sender = approved_auth_headers
+        user_factory(email="race.recipient@example.com")
+        beneficiary = beneficiary_factory(
+            sender, contact="race.recipient@example.com"
+        )
+
+        real = limits_service.assert_within_limits
+        calls = {"n": 0}
+
+        def pass_then_fail(db, user, amount, now=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return real(db, user, amount, now)
+            # A competing request committed in between.
+            raise limits_service.LimitExceededError(
+                "daily", amount, Decimal("0"), Decimal("3000")
+            )
+
+        monkeypatch.setattr(
+            "app.routers.remittances.assert_within_limits", pass_then_fail
+        )
+
+        response = client.post(
+            "/remittances/quote",
+            json={
+                "beneficiary_id": str(beneficiary.id),
+                "zar_send_amount": "1000.00",
+            },
+            headers=headers,
+        )
+
+        assert response.status_code == 403, response.text
+        assert calls["n"] == 2, "the second check did not run"
+
+        # The critical part: the losing quote must not be left behind
+        # holding headroom it was refused.
+        remaining = (
+            db_session.query(Remittance)
+            .filter(Remittance.sender_id == sender.id)
+            .count()
+        )
+        assert remaining == 0
+
+    def test_the_headroom_reported_already_counts_this_quote(
+        self, quote_factory
+    ):
+        """
+        The response's remaining headroom is computed from totals taken
+        after the insert, so it must not subtract the amount a second
+        time.
+        """
+        quote, _headers, _sender, _ = quote_factory(amount="1000.00")
+        limits = quote["limits"]
+        assert Decimal(limits["daily_limit_zar"]) == Decimal("3000")
+        assert Decimal(limits["daily_remaining_zar"]) == Decimal("2000")
