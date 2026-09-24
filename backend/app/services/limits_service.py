@@ -148,6 +148,16 @@ def sender_totals(
                     Remittance.quote_expires_at.is_(None),
                     Remittance.quote_expires_at > now_naive,
                 ),
+                # A failed settlement keeps holding headroom, because the
+                # sender's rand is still gone until someone refunds it
+                # (REFUNDED is deliberately absent from
+                # LIMIT_CONSUMING_STATUSES). The exception is a row that
+                # failed before cash-in was ever confirmed: nothing left
+                # the sender there, so it must not hold anything.
+                or_(
+                    Remittance.status != RemittanceStatus.FAILED,
+                    Remittance.cash_in_confirmed_at.isnot(None),
+                ),
             )
             .scalar()
         )

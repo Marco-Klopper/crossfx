@@ -23,7 +23,7 @@ from app.models.beneficiary import Beneficiary
 from app.models.remittance import CashOut, CashOutStatus, Remittance, RemittanceStatus
 from app.models.user import User
 from app.services import fee_service
-from app.services.ledger import InsufficientFundsError, Ledger
+from app.services.ledger import Direction, InsufficientFundsError, Ledger
 from app.services.settlement_queue import SettlementQueue
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,10 @@ class RecipientNotRegisteredError(CashInError):
     pooled custody the credit lands in the recipient's internal wallet,
     which they must own before value can be sent to it (spec §9.1).
     """
+
+
+class RefundStateError(CashInError):
+    """A remittance that cannot be refunded from the state it is in."""
 
 
 class SettlementPublishError(Exception):
@@ -206,6 +210,100 @@ def queue_for_settlement(
     return entry_id
 
 
+# -- failure recovery -------------------------------------------------------
+#
+# A settlement can only fail after cash-in was confirmed, so a FAILED
+# remittance always means the sender's rand is gone and the recipient was
+# never credited. There used to be no way out of that state: the admin
+# retry endpoint refused it, no refund existed, and limits_service handed
+# the headroom back as though nothing had happened. These two functions
+# are the two legitimate exits — try again, or give the money back.
+
+
+def requeue_failed_remittance(db: Session, remittance: Remittance) -> None:
+    """
+    Returns a FAILED remittance to CASH_IN_CONFIRMED so it can be
+    published again.
+
+    The cash-in itself is not re-simulated: the sender already paid, and
+    the timestamps recording that stay exactly as they are. Only the
+    status moves, which is what makes the row claimable by the worker
+    again (worker.CLAIMABLE).
+    """
+    if remittance.status != RemittanceStatus.FAILED:
+        raise CashInStateError(
+            f"Remittance is {remittance.status.value}; only a failed "
+            f"settlement can be requeued"
+        )
+    if remittance.cash_in_confirmed_at is None:
+        raise CashInStateError(
+            "This remittance failed before cash-in was confirmed, so there "
+            "is nothing to settle — the sender must request a new quote"
+        )
+    # Still the precondition it was at cash-in: a transfer cannot land on
+    # a recipient who has since gone away.
+    assert_recipient_registered(db, remittance)
+
+    remittance.status = RemittanceStatus.CASH_IN_CONFIRMED
+    db.flush()
+    logger.info("Requeued failed remittance %s for settlement", remittance.id)
+
+
+def refund_failed_remittance(
+    db: Session, remittance: Remittance, admin: User, now: datetime | None = None
+) -> Remittance:
+    """
+    Gives a failed remittance's rand back and marks it REFUNDED.
+
+    The credit is a `record_external` entry rather than a balance
+    movement, for the same reason the sender's outgoing leg is: their ZAR
+    never sat in a ledger balance — it went bank/agent -> corridor pool —
+    so the refund leaves by the same door it came in. The entry is what
+    the sender's transaction history shows, and it is the audit trail for
+    money that moved outside the ledger.
+
+    REFUNDED is deliberately absent from LIMIT_CONSUMING_STATUSES: this
+    is the moment the sender's headroom is genuinely free again.
+    """
+    if remittance.status != RemittanceStatus.FAILED:
+        raise RefundStateError(
+            f"Remittance is {remittance.status.value}; only a failed "
+            f"settlement can be refunded"
+        )
+    if remittance.cash_in_confirmed_at is None:
+        raise RefundStateError(
+            "This remittance failed before cash-in was confirmed, so no "
+            "money was ever taken from the sender"
+        )
+
+    sender = db.get(User, remittance.sender_id)
+    if sender is None:
+        raise RefundStateError(
+            "This remittance has no sender on record to refund"
+        )
+
+    ledger = Ledger(db)
+    ledger.record_external(
+        ledger.wallet_for(sender),
+        Direction.INCOMING,
+        fee_service.SEND_CURRENCY,
+        Decimal(remittance.zar_send_amount),
+        remittance_id=remittance.id,
+    )
+
+    remittance.status = RemittanceStatus.REFUNDED
+    db.flush()
+    logger.info(
+        "Refunded %s %s to %s for failed remittance %s (admin %s)",
+        remittance.zar_send_amount,
+        fee_service.SEND_CURRENCY,
+        sender.email,
+        remittance.id,
+        admin.id,
+    )
+    return remittance
+
+
 # -- cash-out (spec §10) ----------------------------------------------------
 
 
@@ -215,6 +313,7 @@ def request_cash_out(
     uctusd_amount: Decimal,
     payout_currency: str,
     usd_zar_rate: Decimal,
+    idempotency_key: str | None = None,
 ) -> CashOut:
     """
     Opens a cash-out and debits the UCTUSD immediately.
@@ -223,10 +322,39 @@ def request_cash_out(
     opening three cash-outs against one balance and having all three
     approved. `Ledger.debit` refusing to go negative is the brief's
     "validate sufficient balance" step, so there is no separate check.
+
+    `idempotency_key` comes from the caller's Idempotency-Key header. It
+    is what makes a retried or double-clicked request a no-op: without
+    it, this function happily debited the same balance twice and opened
+    two payouts, which was the most likely way for a user to lose money
+    in this system. A replay returns the original row untouched.
     """
+    if idempotency_key is not None:
+        existing = (
+            db.query(CashOut)
+            .filter(
+                CashOut.user_id == user.id,
+                CashOut.idempotency_key == idempotency_key,
+            )
+            .first()
+        )
+        if existing is not None:
+            logger.info(
+                "Cash-out %s replayed under idempotency key %s — returning "
+                "the original",
+                existing.id,
+                idempotency_key,
+            )
+            return existing
+
     quote = fee_service.calculate_cash_out_payout(
         uctusd_amount, payout_currency, usd_zar_rate
     )
+    # Not redundant with calculate_cash_out_payout above, which prices
+    # anything in PRICEABLE_PAYOUT_CURRENCIES — a set that includes
+    # UCTUSD. payout_currencies() excludes it, because cashing out into
+    # the token you already hold is a no-op. The API's own schema
+    # validator rejects it first, so this only fires for a direct caller.
     if quote.payout_currency not in payout_currencies():
         raise fee_service.UnsupportedPayoutCurrencyError(
             f"{quote.payout_currency} is not a supported payout currency — "
@@ -251,6 +379,7 @@ def request_cash_out(
         fx_rate_used=quote.fx_rate,
         status=CashOutStatus.REQUESTED,
         debit_transaction_id=debit.id,
+        idempotency_key=idempotency_key,
     )
     db.add(cash_out)
     db.flush()

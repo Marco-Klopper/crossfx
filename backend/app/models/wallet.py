@@ -26,6 +26,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Numeric,
     String,
     UniqueConstraint,
@@ -124,6 +125,9 @@ class WalletTransaction(Base):
             "status",
             name="uq_wallet_tx_remittance_direction_status",
         ),
+        # GET /wallet/transactions filters on wallet_id on every call and
+        # there was no index behind it.
+        Index("ix_wallet_transactions_wallet_id", "wallet_id"),
     )
 
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)

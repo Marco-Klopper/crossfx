@@ -44,17 +44,21 @@ import logging
 import os
 import signal
 import socket
+import time
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import SessionLocal
 from app.models.beneficiary import Beneficiary
 from app.models.remittance import Remittance, RemittanceStatus
 from app.models.user import User
 from app.models.wallet import PlatformWallet, PoolRole
+from app.services import fee_service
 from app.services.ledger import Direction, EntryStatus, Ledger
 from app.services.settlement_queue import SettlementQueue
 from app.services.xrpl_service import XRPLService, XRPLTransactionError
@@ -64,6 +68,22 @@ logger = logging.getLogger("settlement_worker")
 # Statuses a remittance may be claimed from. Track 3's publisher may
 # reasonably set either before pushing the message.
 CLAIMABLE = (RemittanceStatus.CASH_IN_CONFIRMED, RemittanceStatus.QUEUED)
+
+# ...and the wider set allowed when the message was reclaimed from a
+# consumer that stopped responding.
+#
+# _claim commits SETTLING before the on-chain call. A worker that died in
+# that window left the remittance SETTLING forever: SETTLING was not
+# claimable, so the redelivery returned SKIPPED — and SKIPPED acks, which
+# destroyed the only message pointing at it. Money taken, nothing
+# settled, nothing left to retry.
+#
+# Including SETTLING here is safe precisely because it is gated on the
+# reclaim path: Redis only hands the message over after
+# settlement_reclaim_idle_ms of silence, which is far longer than a
+# healthy settlement takes. A worker that is merely slow still holds its
+# message, so it cannot be raced by this.
+RECLAIMABLE = CLAIMABLE + (RemittanceStatus.SETTLING,)
 
 
 class SettlementOutcome(str, enum.Enum):
@@ -134,22 +154,59 @@ class SettlementWorker:
         # Anything this consumer was delivered but never acked
         for entry_id, fields in self.queue.read_pending(self.consumer):
             logger.info("Replaying unacked message %s", entry_id)
-            self.handle(entry_id, fields)
+            self.handle(entry_id, fields, reclaimed=True)
 
         while not self._stopping:
-            for entry_id, fields in self.queue.read_new(self.consumer):
-                self.handle(entry_id, fields)
+            # Deliberately broad. This loop used to have no handler at
+            # all, so a single redis.ConnectionError — or any database
+            # error surfacing from _claim's or _fail's commit — ended the
+            # process and stopped settlement for everyone, silently. Log
+            # it, wait, and carry on; a worker that cannot reach Redis
+            # right now is not a worker that should give up.
+            try:
+                self._reclaim_abandoned()
+                for entry_id, fields in self.queue.read_new(self.consumer):
+                    self.handle(entry_id, fields)
+            except Exception:
+                logger.exception(
+                    "Consume loop error — retrying in %ss",
+                    settings.settlement_error_backoff_seconds,
+                )
+                self._sleep(settings.settlement_error_backoff_seconds)
 
         logger.info("Worker %s stopped", self.consumer)
+
+    def _reclaim_abandoned(self) -> None:
+        """
+        Takes over anything a dead worker left pending, and settles it.
+
+        Handled here rather than only at startup because the worker that
+        died may not be the one that restarts — in a multi-worker
+        deployment the survivors are what recovers the casualty's work.
+        """
+        for entry_id, fields in self.queue.reclaim_stale(
+            self.consumer, settings.settlement_reclaim_idle_ms
+        ):
+            logger.warning(
+                "Reclaimed abandoned message %s from another consumer",
+                entry_id,
+            )
+            self.handle(entry_id, fields, reclaimed=True)
+
+    def _sleep(self, seconds: float) -> None:
+        """Indirection so tests can drive the loop without real delays."""
+        time.sleep(seconds)
 
     def stop(self) -> None:
         """Finish the current message, then leave the loop."""
         self._stopping = True
 
-    def handle(self, entry_id: str, fields: dict) -> None:
+    def handle(
+        self, entry_id: str, fields: dict, *, reclaimed: bool = False
+    ) -> None:
         """Settles one message and acks it if that is the right thing."""
         try:
-            outcome = self.settle(fields)
+            outcome = self.settle(fields, reclaimed=reclaimed)
         except SettlementError:
             # on-chain payment landed but the ledger write did not.
             logger.error(
@@ -171,7 +228,11 @@ class SettlementWorker:
         self.stop()
 
     def settle(
-        self, message: dict, db: Session | None = None
+        self,
+        message: dict,
+        db: Session | None = None,
+        *,
+        reclaimed: bool = False,
     ) -> SettlementOutcome:
         """
         Settles one remittance and returns its outcome.
@@ -182,14 +243,16 @@ class SettlementWorker:
         unacked and redelivering forever.
         """
         if db is not None:
-            return self._settle(message, db)
+            return self._settle(message, db, reclaimed=reclaimed)
         session = self.session_factory()
         try:
-            return self._settle(message, session)
+            return self._settle(message, session, reclaimed=reclaimed)
         finally:
             session.close()
 
-    def _settle(self, message: dict, db: Session) -> SettlementOutcome:
+    def _settle(
+        self, message: dict, db: Session, *, reclaimed: bool = False
+    ) -> SettlementOutcome:
         remittance_id = self._remittance_id(message)
         if remittance_id is None:
             return SettlementOutcome.SKIPPED
@@ -197,7 +260,7 @@ class SettlementWorker:
         idempotency_key = message.get("idempotency_key")
 
         # 1. Claim it. Everything past here runs at most once.
-        if not self._claim(db, remittance_id):
+        if not self._claim(db, remittance_id, reclaimed=reclaimed):
             logger.info(
                 "Skipping %s — already claimed or settled (redelivered)",
                 idempotency_key,
@@ -213,12 +276,18 @@ class SettlementWorker:
         )
 
         # 2. Work out who and what, before anything irreversible.
+        # recipient is bound before the try so that a failure in either
+        # pool lookup still knows who to write the failed entry against.
+        # Passing recipient=None unconditionally meant a missing
+        # platform_wallets row left the recipient — who was resolved
+        # perfectly well — with no record that anything had been tried.
+        recipient = None
         try:
             recipient = self._resolve_recipient(db, remittance)
             send_pool = self._load_pool(db, PoolRole.SEND_POOL)
             payout_pool = self._load_pool(db, PoolRole.PAYOUT_POOL)
         except SettlementError as exc:
-            return self._fail(db, remittance, str(exc), recipient=None)
+            return self._fail(db, remittance, str(exc), recipient=recipient)
 
         amount = Decimal(remittance.uctusd_amount)
 
@@ -261,7 +330,7 @@ class SettlementWorker:
         try:
             ledger.credit(
                 ledger.wallet_for(recipient),
-                "UCTUSD",
+                fee_service.SETTLEMENT_CURRENCY,
                 amount,
                 remittance_id=remittance.id,
                 xrpl_tx_hash=tx_hash,
@@ -273,7 +342,7 @@ class SettlementWorker:
                 ledger.record_external(
                     ledger.wallet_for(sender),
                     Direction.OUTGOING,
-                    "ZAR",
+                    fee_service.SEND_CURRENCY,
                     Decimal(remittance.zar_send_amount),
                     remittance_id=remittance.id,
                     xrpl_tx_hash=tx_hash,
@@ -333,14 +402,33 @@ class SettlementWorker:
             ledger.record_external(
                 ledger.wallet_for(recipient),
                 Direction.INCOMING,
-                "UCTUSD",
+                fee_service.SETTLEMENT_CURRENCY,
                 Decimal(remittance.uctusd_amount),
                 remittance_id=remittance.id,
                 status=EntryStatus.FAILED,
                 failure_reason=reason[:500],
             )
 
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            # uq_wallet_tx_remittance_direction_status already holds a
+            # failed incoming entry for this remittance — this is its
+            # second failure, after an admin retried it. The entry is a
+            # record that an attempt failed, and one is enough; what
+            # must not happen is this raising, because _fail is the
+            # worker's own error handler and an exception here escaped
+            # all the way out of run() and killed the process.
+            db.rollback()
+            remittance = db.get(Remittance, remittance.id)
+            remittance.status = RemittanceStatus.FAILED
+            db.commit()
+            logger.warning(
+                "Settlement for %s failed again; the existing failed entry "
+                "stands",
+                remittance.id,
+            )
+
         logger.error("Settlement failed for %s: %s", remittance.id, reason)
         return SettlementOutcome.FAILED
 
@@ -364,17 +452,27 @@ class SettlementWorker:
             return None
 
     @staticmethod
-    def _claim(db: Session, remittance_id: uuid.UUID) -> bool:
+    def _claim(
+        db: Session, remittance_id: uuid.UUID, *, reclaimed: bool = False
+    ) -> bool:
         """
         Compare-and-swap: move the remittance to SETTLING only if it is
         currently awaiting settlement. Returns False if another worker
         already claimed it, or if it has already settled.
+
+        `reclaimed` widens the accepted set to include SETTLING. It is
+        set only for a message Redis handed over after the previous
+        consumer went quiet for settlement_reclaim_idle_ms — i.e. one
+        whose worker is gone. Without it a remittance stranded mid-settle
+        could never be picked up again, and the redelivery acked the
+        message away.
         """
+        claimable = RECLAIMABLE if reclaimed else CLAIMABLE
         claimed = (
             db.query(Remittance)
             .filter(
                 Remittance.id == remittance_id,
-                Remittance.status.in_(CLAIMABLE),
+                Remittance.status.in_(claimable),
             )
             .update(
                 {Remittance.status: RemittanceStatus.SETTLING},

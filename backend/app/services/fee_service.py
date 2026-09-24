@@ -28,6 +28,12 @@ TOKEN_QUANTUM = Decimal("0.000001")
 RATE_QUANTUM = Decimal("0.000001")
 
 SETTLEMENT_CURRENCY = "UCTUSD"
+# The corridor's send-side fiat. Named for the same reason
+# SETTLEMENT_CURRENCY is: worker/settlement_worker.py used to hardcode
+# "ZAR" and "UCTUSD" as string literals, which meant a change to
+# SUPPORTED_CURRENCIES could break a ledger write *after* the on-chain
+# payment had already gone out.
+SEND_CURRENCY = "ZAR"
 # UCTUSD is a USD-denominated IOU, so a USD payout is 1:1 by definition;
 # ZAR is converted at the same mid-market rate the quote used. Anything
 # else would need its own rate feed, which this prototype does not have.

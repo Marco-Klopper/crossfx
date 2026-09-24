@@ -12,7 +12,12 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import require_admin
 from app.models.kyc import ApplicationStatus, KYCApplication
-from app.models.remittance import CashOut, CashOutStatus, Remittance
+from app.models.remittance import (
+    CashOut,
+    CashOutStatus,
+    Remittance,
+    RemittanceStatus,
+)
 from app.models.user import KYCStatus, User
 from app.schemas.kyc import AdminKYCApplicationRead, KYCApplicationRead, KYCReviewRequest
 from app.schemas.remittance import (
@@ -131,7 +136,16 @@ def confirm_zar_payment(
     )
 
     try:
-        cashin_cashout_service.simulate_cash_in(db, remittance, method)
+        if remittance.status == RemittanceStatus.FAILED:
+            # This endpoint has always described itself as the manual
+            # retry, but simulate_cash_in refused anything that was not a
+            # live quote — so the one state a retry exists for, FAILED,
+            # was the one it rejected with a 409. Move it back to
+            # CASH_IN_CONFIRMED instead; the sender already paid, and the
+            # cash-in timestamps stay as they are.
+            cashin_cashout_service.requeue_failed_remittance(db, remittance)
+        else:
+            cashin_cashout_service.simulate_cash_in(db, remittance, method)
     except (
         cashin_cashout_service.QuoteExpiredError,
         cashin_cashout_service.CashInStateError,
@@ -171,6 +185,48 @@ def confirm_zar_payment(
     )
 
 
+@router.post(
+    "/remittances/{remittance_id}/refund", response_model=RemittanceRead
+)
+def refund_remittance(
+    remittance_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """
+    Gives a failed remittance's rand back to the sender (spec §8).
+
+    The counterpart to confirm-payment: that one retries the transfer,
+    this one abandons it. A settlement can only fail after cash-in was
+    confirmed, so a FAILED remittance always means the sender has paid
+    and the recipient has not been credited — and until this endpoint
+    existed there was no route out of that state at all.
+
+    The refund is written as a ledger entry before the status moves, so
+    the sender's transaction history shows the money coming back rather
+    than the row quietly changing colour.
+    """
+    remittance = db.get(Remittance, remittance_id)
+    if remittance is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Remittance not found"
+        )
+
+    try:
+        cashin_cashout_service.refund_failed_remittance(
+            db, remittance, _admin
+        )
+    except cashin_cashout_service.RefundStateError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+
+    db.commit()
+    db.refresh(remittance)
+    return remittance
+
+
 def _get_cash_out(db: Session, cash_out_id: uuid.UUID) -> CashOut:
     cash_out = db.get(CashOut, cash_out_id)
     if cash_out is None:
@@ -208,6 +264,9 @@ def approve_cash_out(
     half of a swap that is already half-done.
     """
     cash_out = _get_cash_out(db, cash_out_id)
+    # Releasing money had no audit trail at all, though KYC has recorded
+    # its reviewer since Track 1.
+    cash_out.reviewed_by_admin_id = _admin.id
     try:
         cashin_cashout_service.simulate_cash_out(db, cash_out)
     except cashin_cashout_service.CashOutStateError as exc:
@@ -236,6 +295,7 @@ def reject_cash_out(
     reversal has to be visible in its own right.
     """
     cash_out = _get_cash_out(db, cash_out_id)
+    cash_out.reviewed_by_admin_id = _admin.id
     try:
         cashin_cashout_service.fail_cash_out(
             db, cash_out, payload.reason or "Rejected by administrator"

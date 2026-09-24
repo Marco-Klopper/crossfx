@@ -132,6 +132,43 @@ class SettlementQueue:
         )
         return self._entries(response)
 
+    def reclaim_stale(
+        self, consumer: str, min_idle_ms: int, count: int = 10
+    ) -> list:
+        """
+        Takes over messages that some *other* consumer was delivered and
+        has not acked for `min_idle_ms`.
+
+        read_pending() only ever sees this consumer's own pending list,
+        and a worker's name includes its PID — so after a crash and
+        restart the dead consumer's entries sat in the group's PEL with
+        nobody left to claim them. At-least-once delivery quietly became
+        at-most-once for exactly the messages that were in flight when
+        something went wrong, which is the only time it matters.
+
+        XAUTOCLAIM is the Redis primitive for this (5.0+). Returns the
+        same (entry_id, fields) shape as the other readers.
+        """
+        try:
+            response = self.client.xautoclaim(
+                name=self.stream,
+                groupname=self.group,
+                consumername=consumer,
+                min_idle_time=min_idle_ms,
+                count=count,
+            )
+        except redis.ResponseError as exc:
+            # Older servers without XAUTOCLAIM. Reclaiming is a recovery
+            # nicety, not a correctness requirement for the happy path,
+            # so a worker on an old Redis should still start.
+            logger.warning("XAUTOCLAIM unavailable (%s) — skipping", exc)
+            return []
+        # (next_cursor, [(entry_id, fields), ...]) on redis-py 4/5, with a
+        # third element (deleted ids) on newer servers.
+        if not response or len(response) < 2:
+            return []
+        return response[1] or []
+
     def acknowledge(self, entry_id: str) -> None:
         """
         Marks a message done. Called only after the settlement

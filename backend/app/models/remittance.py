@@ -22,6 +22,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Numeric,
     String,
     Uuid,
@@ -42,6 +43,13 @@ class RemittanceStatus(str, enum.Enum):
     SETTLING = "settling"
     SETTLED = "settled"
     FAILED = "failed"
+    # FAILED used to be the end of the line: the sender's rand had been
+    # taken, the on-chain leg had not landed, and no route through the
+    # API returned the money or retried the transfer. REFUNDED is that
+    # missing terminal state — reached through
+    # POST /admin/remittances/{id}/refund, which writes the sender's
+    # ZAR back as a ledger entry before flipping the status.
+    REFUNDED = "refunded"
 
 
 class CashOutStatus(str, enum.Enum):
@@ -58,15 +66,27 @@ class CashOutStatus(str, enum.Enum):
 
 
 # The statuses whose amounts are "spoken for" and so consume a sender's
-# limit headroom. FAILED does not (nothing left the sender), and an
-# expired QUOTED does not either — see app.services.limits_service, which
-# applies the expiry filter this tuple cannot express.
+# limit headroom.
+#
+# FAILED is in the list, which reads oddly until you look at when it is
+# reached. This tuple used to omit it, reasoning that "nothing left the
+# sender" — but a settlement can only fail *after* cash-in was confirmed,
+# so the sender's rand had in fact already gone. Omitting it handed the
+# headroom straight back while the money was still missing. A failed
+# remittance therefore keeps consuming headroom until it is REFUNDED,
+# which is the point at which the money genuinely is back.
+#
+# Two conditions this tuple cannot express are applied in
+# app.services.limits_service instead: an expired QUOTED does not consume
+# headroom, and neither does a FAILED row whose cash-in was never
+# confirmed.
 LIMIT_CONSUMING_STATUSES = (
     RemittanceStatus.QUOTED,
     RemittanceStatus.CASH_IN_CONFIRMED,
     RemittanceStatus.QUEUED,
     RemittanceStatus.SETTLING,
     RemittanceStatus.SETTLED,
+    RemittanceStatus.FAILED,
 )
 
 
@@ -104,6 +124,14 @@ class Remittance(Base):
 
     sender = relationship("User", back_populates="remittances")
     beneficiary = relationship("Beneficiary", back_populates="remittances")
+
+    __table_args__ = (
+        # app.services.limits_service.sender_totals filters on exactly
+        # this pair on every single quote request, and nothing indexed
+        # either column. It is the first query that would degrade under
+        # the load tests.
+        Index("ix_remittances_sender_id_created_at", "sender_id", "created_at"),
+    )
 
     def is_quote_expired(self, now: datetime | None = None) -> bool:
         """
@@ -166,8 +194,30 @@ class CashOut(Base):
         Uuid, ForeignKey("wallet_transactions.id"), nullable=True
     )
 
+    # Supplied by the client as an Idempotency-Key header. Without it a
+    # double-clicked "Request payout" button debited the balance twice
+    # and opened two cash-outs: unlike the settlement path there was no
+    # key, no unique constraint and no dedupe of any kind. Nullable
+    # because the header is optional, and NULLs are distinct under the
+    # unique index in both SQLite and Postgres, so unkeyed requests are
+    # unaffected.
+    idempotency_key = Column(String, nullable=True)
+
+    # Who released or refused the payout. KYC already records its
+    # reviewer; a money movement had no such trail at all.
+    reviewed_by_admin_id = Column(
+        Uuid, ForeignKey("users.id"), nullable=True
+    )
+
     requested_at = Column(DateTime, default=_utcnow, nullable=False)
     approved_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
 
-    user = relationship("User", back_populates="cash_outs")
+    __table_args__ = (
+        Index("uq_cash_outs_idempotency_key", "idempotency_key", unique=True),
+        Index("ix_cash_outs_user_id", "user_id"),
+    )
+
+    user = relationship(
+        "User", back_populates="cash_outs", foreign_keys=[user_id]
+    )

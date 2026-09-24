@@ -88,6 +88,17 @@ class Settings(BaseSettings):
     settlement_consumer_group: str = "crossfx-settlement-workers"
     # How long a worker blocks waiting for a message before looping (ms).
     settlement_block_ms: int = 5000
+    # How long a message must sit unacked in another consumer's pending
+    # list before a live worker may take it over (XAUTOCLAIM). This is
+    # the recovery path for a worker that died mid-settlement: its
+    # consumer name carries its PID, so nothing else would ever claim
+    # them. Comfortably longer than any healthy settlement takes.
+    settlement_reclaim_idle_ms: int = 60_000
+    # How long to wait before retrying the consume loop after an
+    # unexpected error (a Redis blip, a database hiccup). The loop used
+    # to have no handler at all, so one such error ended the process and
+    # settlement stopped silently.
+    settlement_error_backoff_seconds: float = 5.0
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

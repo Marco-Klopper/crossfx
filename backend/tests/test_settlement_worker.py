@@ -13,14 +13,15 @@ The properties under test are the ones the brief and spec §9 promise:
   - a wallet seed never leaves XRPLService
 """
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, create_autospec
 
 import pytest
 
 from app.models.remittance import RemittanceStatus
 from app.models.wallet import WalletTransaction
 from app.services.ledger import Ledger
-from app.services.xrpl_service import XRPLTransactionError
+from app.services.settlement_queue import SettlementQueue
+from app.services.xrpl_service import XRPLService, XRPLTransactionError
 from worker.settlement_worker import (
     SettlementError,
     SettlementOutcome,
@@ -30,15 +31,32 @@ from worker.settlement_worker import (
 
 @pytest.fixture()
 def xrpl():
-    """A fake XRPLService whose payments always succeed."""
-    service = MagicMock()
+    """
+    A fake XRPLService whose payments always succeed.
+
+    create_autospec, not a bare MagicMock: a bare mock accepts any call
+    signature, so renaming or re-ordering send_pooled_payment's arguments
+    would leave every test in this module green while production broke.
+    The spec is checked against the real class.
+    """
+    service = create_autospec(XRPLService, instance=True)
     service.send_pooled_payment.return_value = "TXHASH123"
     return service
 
 
 @pytest.fixture()
 def queue():
-    return MagicMock()
+    queue = create_autospec(SettlementQueue, instance=True)
+    # The reader methods return lists of (entry_id, fields); autospec
+    # cannot infer that, and the run loop iterates them.
+    queue.read_pending.return_value = []
+    queue.read_new.return_value = []
+    queue.reclaim_stale.return_value = []
+    # stream/group are set in SettlementQueue.__init__, so a class-level
+    # autospec does not know about them; run() logs both.
+    queue.stream = "test-stream"
+    queue.group = "test-group"
+    return queue
 
 
 @pytest.fixture()
@@ -336,7 +354,7 @@ class TestAckBehaviour:
 
     def test_acked_only_after_settling_returns(self, worker, queue):
         calls = []
-        worker.settle = lambda fields: calls.append("settled") or (
+        worker.settle = lambda fields, **_: calls.append("settled") or (
             SettlementOutcome.SETTLED
         )
         queue.acknowledge.side_effect = lambda entry_id: calls.append(
@@ -352,7 +370,7 @@ class TestAckBehaviour:
         A recorded failure is a completed outcome — redelivering would
         just re-fail. Only the reconciliation case stays pending.
         """
-        worker.settle = lambda fields: SettlementOutcome.FAILED
+        worker.settle = lambda fields, **_: SettlementOutcome.FAILED
 
         worker.handle("1700000000-1", {})
 
@@ -365,7 +383,7 @@ class TestAckBehaviour:
         forgotten (spec §9.5).
         """
 
-        def boom(fields):
+        def boom(fields, **_):
             raise SettlementError("ledger write failed after on-chain success")
 
         worker.settle = boom
@@ -384,7 +402,7 @@ class TestRunLoop:
         work is taken.
         """
         handled = []
-        worker.settle = lambda fields: handled.append(
+        worker.settle = lambda fields, **_: handled.append(
             fields["idempotency_key"]
         ) or SettlementOutcome.SETTLED
 
