@@ -1,0 +1,7 @@
+# Seeded synthetic-user credentials — regenerate with seed_users.py rather
+# than committing throwaway accounts.
+users.json
+settle_users.json
+
+# Raw load-test output. The report in README.md is the deliverable.
+results/
