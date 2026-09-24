@@ -605,6 +605,43 @@ The request returns as soon as the message is on the queue. Settlement latency,
 XRPL availability and Testnet congestion are all on the worker's side of that
 boundary (§7.2), which is the entire reason the brief mandates a queue here.
 
+### 8.4 When settlement fails: retry, or refund
+
+A settlement can only fail after cash-in was confirmed. A `failed` remittance
+therefore always means the same thing: the sender's rand has gone and the
+recipient was never credited. There are exactly two honest ways out, and both
+are administrator actions rather than automatic ones, because choosing between
+them is a judgement about whether the transfer can still land.
+
+**Retry** — `POST /admin/remittances/{id}/confirm-payment`. Returns the
+remittance to `cash_in_confirmed` and republishes it. The cash-in itself is not
+re-simulated: the sender already paid, and the timestamps recording that are
+left exactly as they are. Only the status moves, which is what makes the row
+claimable by the worker again. Use this when the cause was transient — the pool
+was dry, the Testnet was congested, the queue was unreachable.
+
+**Refund** — `POST /admin/remittances/{id}/refund`. Credits the sender's ZAR
+back as a ledger entry and moves the remittance to `refunded`. The entry is
+written *before* the status changes, so the sender's transaction history shows
+the money coming back rather than a row quietly changing colour. Like the
+sender's outgoing leg it is a `record_external` entry rather than a balance
+movement, for the same reason: their rand never sat in a ledger balance — it
+went bank or agent to corridor pool — so the refund leaves by the door it came
+in through.
+
+**What this means for limits (§6).** A `failed` remittance keeps consuming the
+sender's headroom, because their money is still gone. `refunded` does not: that
+is the moment it is genuinely back. The one exception is a remittance that
+failed *before* cash-in was ever confirmed, which holds nothing, because nothing
+was taken. The same reasoning applies to a `failed` row as to a `settled` one —
+the sender is out the money either way until somebody gives it back.
+
+A production corridor would automate the retry with a bounded budget and a
+dead-letter queue, and would refund automatically once that budget was spent.
+Keeping a human in the loop is a prototype simplification, and a deliberate one:
+it is better than the alternative this replaced, which was no route out of
+`failed` at all.
+
 ## 9. UCTUSD Settlement Flow
 
 *Written by Track 2 (Settlement & Security).*
@@ -926,7 +963,8 @@ means the route is gated on `require_kyc_approved`.*
 | POST | `/auth/login` | — | JSON credential login, returns a JWT |
 | POST | `/auth/token` | — | OAuth2-form login (Swagger's Authorize button only) |
 | POST | `/auth/logout` | — | Client-side token discard (stateless JWTs, nothing to revoke) |
-| GET | `/auth/me` | user | Profile, KYC status, applicable transaction limits |
+| GET | `/health` | — | Liveness probe; returns `{"status": "ok"}` |
+| GET | `/auth/me` | user | Profile, `is_admin`, KYC status, applicable transaction limits |
 | POST | `/kyc/apply` | user | Submit a mock KYC application |
 | GET | `/kyc/status` | user | Current KYC status + latest application |
 | POST | `/beneficiaries/` | user | Register a recipient |
@@ -934,19 +972,25 @@ means the route is gated on `require_kyc_approved`.*
 | GET, DELETE | `/beneficiaries/{id}` | user | Read/remove a recipient (404, not 403, if it isn't the caller's) |
 | GET | `/admin/kyc/applications` | admin | KYC review queue |
 | POST | `/admin/kyc/{id}/approve`, `/reject` | admin | Review a KYC application |
-| POST | `/admin/remittances/{id}/confirm-payment` | admin | Mock payment-service cash-in confirmation, and the republish retry (§8.2) |
+| POST | `/admin/remittances/{id}/confirm-payment` | admin | Mock payment-service cash-in confirmation, and the retry for a failed or unpublished settlement (§8.2) |
+| POST | `/admin/remittances/{id}/refund` | admin | Give a failed remittance's rand back and mark it `refunded` (§8.4) |
 | GET | `/admin/cash-outs` | admin | Payout queue, oldest first; filterable by `?status=` |
 | POST | `/admin/cash-outs/{id}/approve` | admin | Release a payout: credits the fiat leg (§10) |
 | POST | `/admin/cash-outs/{id}/reject` | admin | Refuse a payout and refund the reserved UCTUSD (§10.2) |
 | GET | `/wallet/balance` | user | UCTUSD balance plus the full multi-currency ledger view (§9.4) |
 | GET | `/wallet/transactions` | user | Incoming/outgoing history: currency, amount, status, date, XRPL hash |
-| POST | `/wallet/cash-out` | user | Request a fiat payout; debits UCTUSD immediately (§10.2) |
+| POST | `/wallet/cash-out` | user | Request a fiat payout; debits UCTUSD immediately (§10.2). Accepts an optional `Idempotency-Key` header, which makes a retry a no-op |
 | GET | `/wallet/cash-outs` | user | The caller's own cash-outs, newest first |
 | GET | `/wallet/cash-outs/{id}` | user | One cash-out (404, not 403, if it isn't the caller's) |
 | POST | `/remittances/quote` | user, KYC | Price a send and persist it as a `quoted` remittance (§4–§6) |
 | POST | `/remittances/{id}/confirm-cash-in` | user, KYC | Confirm ZAR received, then queue settlement (§8) |
-| GET | `/remittances/` | user, KYC | The sender's transaction history, newest first |
-| GET | `/remittances/{id}` | user, KYC | Status, and the XRPL hash once settled |
+| GET | `/remittances/` | user | The sender's transaction history, newest first |
+| GET | `/remittances/{id}` | user | Status, and the XRPL hash once settled |
+
+Note the asymmetry on the last four rows: *sending* requires approved KYC, *reading
+what you already sent* does not. Gating the reads too meant a sender whose KYC was
+later rejected lost access to their own records, including the ability to poll a
+transfer that was mid-settlement.
 
 `platform_wallets` is deliberately absent from this table: it is reachable from no
 route at all (§13).
@@ -982,6 +1026,12 @@ route at all (§13).
 - **Authentication:** stateless JWTs (`HS256`), 60-minute expiry, `sub`/`iat`/`exp`
   claims only. No refresh tokens and no server-side revocation — a limitation, recorded
   in §15, not hidden.
+- **No user-enumeration via login — including by the clock.** The shared error
+  message below is only half of it. `user is None or not verify_password(...)`
+  short-circuits, so an unknown address used to answer in about a millisecond while a
+  known one paid bcrypt's ~100ms — a difference measurable over a network, and enough
+  to enumerate accounts on its own. Both branches now do the same work, verifying
+  against a dummy hash when there is no user.
 - **No user-enumeration via login.** `/auth/login` returns the identical
   `401 {"detail": "Incorrect email or password"}` whether the email doesn't exist or
   the password is wrong, so failed logins can't be used to discover which emails are
@@ -1254,15 +1304,11 @@ make it lawful to operate.
   usable token. A production build would use an httpOnly, `Secure`,
   `SameSite` cookie, with CSRF protection. The prototype accepts the risk
   because it has no third-party scripts and runs only on localhost.
-- **The frontend infers admin status by probing an admin endpoint.**
-  `GET /auth/me` does not return `is_admin` (`schemas/user.py`), so the client
-  calls the KYC review queue once at login and treats a `403` as "not an
-  admin". This is cosmetic only — every admin route is enforced server-side by
-  `require_admin` — but it costs a request per login and is the wrong place for
-  the decision. The fix is one field on `MeResponse`.
-- **No automated frontend tests.** The backend has a substantial suite; the
-  React app has none. It was verified by driving the full journey manually and
-  by an end-to-end check against every endpoint the client calls.
+- **Frontend test coverage is partial.** Vitest covers `api.js` and the money
+  formatters — the request layer every screen goes through, and the two places
+  a bug would be silent rather than visible. The screens themselves have no
+  component tests and were verified by driving the full journey manually.
+  ESLint, including the `react-hooks` rules, runs over all of it in CI.
 - **Performance figures are single-machine and single-worker.** Client, API,
   worker, Redis and SQLite all shared one laptop, so the load generator
   competed with the server for CPU and the measured ceiling of ~84 req/s
@@ -1273,6 +1319,53 @@ make it lawful to operate.
   and found no lock contention at 84 req/s, so the database was not the
   bottleneck at this scale and the Postgres parity claimed in §7.4 remains
   model-level rather than load-verified.
+- **Registration still confirms whether an email is already in use.** `/auth/login`
+  goes to some trouble not to leak that — a shared error message, and the same
+  bcrypt work on both branches so the response time does not give it away — but
+  `POST /auth/register` returns a 409 saying "Email already registered". The only
+  real fix is to accept every registration and send a verification email, so the
+  answer is "check your inbox" either way, and this prototype has no mail
+  transport. Returning a fake 201 without one would strand a legitimate user who
+  had forgotten they already signed up, so the clear error is kept deliberately.
+- **JWTs cannot be revoked.** Stateless HS256 tokens with a 60-minute expiry, no
+  `jti`, no denylist and no refresh flow, and `User` has no `is_active` column —
+  so there is no way to suspend an account or cut short a leaked token. For the
+  prototype the mitigation is the short expiry. A production build needs a
+  revocation list or short-lived access tokens plus refresh.
+- **Timestamp columns are timezone-naive.** Every `DateTime` column stores naive
+  UTC, which both SQLite and Postgres hand back without a `tzinfo`. The API
+  compensates at the boundary — `schemas/common.UtcDatetime` tags each value as
+  UTC on the way out, so clients receive an explicit `Z` — but the columns
+  themselves should be `DateTime(timezone=True)`. Until then anything reading the
+  database directly, including `performance-testing/measure_settlement.py`, has
+  to know the convention rather than being told it.
+- **Row locking is a no-op on SQLite.** The quote path locks the sender's `users`
+  row, and the ledger locks the balance row, so that a limit check or a balance
+  check cannot be raced by a concurrent request. `SELECT ... FOR UPDATE` does
+  real work on Postgres and is silently ignored by SQLite, which is what the
+  shipped `.env` selects. The insert races either side of those locks are
+  handled portably (a savepoint and a re-read), but the *check-then-write*
+  serialisation is only genuine on Postgres.
+- **Fees are charged but not credited anywhere.** The transaction fee, the FX
+  margin and the cash-out fee are all deducted from the customer, and no ledger
+  account receives them — so the internal ledger is not balanced double-entry,
+  and the §9.6 reconciliation drifts by the cumulative fees taken. It drifts in
+  the safe direction (the pool is over-collateralised relative to user claims),
+  but it means reconciliation cannot distinguish "fees accrued" from "value
+  unaccounted for". A platform revenue account is the fix.
+- **No rate limiting anywhere.** `/auth/login` and `/auth/token` accept unlimited
+  attempts, with no throttle, backoff or lockout, and no endpoint has a request
+  ceiling. bcrypt's cost makes online password guessing slow rather than
+  impossible, and makes the login endpoint the cheapest thing to exhaust the API
+  with.
+- **`python-jose` 3.3.0 is unmaintained** and carries two published advisories
+  (CVE-2024-33663, algorithm confusion; CVE-2024-33664, a JWE decompression
+  bomb). The first is largely mitigated here because `decode_access_token` pins
+  `algorithms=[...]` rather than trusting the token header, and the second needs
+  a JWE this application never accepts. Migrating to `pyjwt` is the real answer.
+- **No pagination on any list endpoint.** `/remittances/`, `/wallet/transactions`,
+  `/admin/kyc/applications` and `/admin/cash-outs` all return everything. Fine at
+  demo volumes, wrong at any other.
 - **Statutory references in §14 are stated as at the time of writing** and
   should be checked against current sources before the document is relied on
   for anything beyond this assignment. Regulation of crypto assets in South

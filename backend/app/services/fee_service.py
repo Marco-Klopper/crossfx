@@ -219,34 +219,3 @@ def calculate_cash_out_payout(
         payout_amount=convert_from_uctusd(net, code, usd_zar_rate),
         fx_rate=usd_zar_rate,
     )
-
-
-def check_within_limits(
-    user_daily_total: Decimal,
-    user_monthly_total: Decimal,
-    new_amount: Decimal,
-    is_verified: bool,
-) -> bool:
-    """
-    Whether one more remittance of `new_amount` fits inside the sender's
-    limits (spec §6). The running totals are computed by
-    app.services.limits_service, which owns the question of *which*
-    remittances count.
-    """
-    daily_limit = Decimal(
-        str(
-            settings.verified_daily_limit
-            if is_verified
-            else settings.unverified_daily_limit
-        )
-    )
-    monthly_limit = Decimal(
-        str(
-            settings.verified_monthly_limit
-            if is_verified
-            else settings.unverified_monthly_limit
-        )
-    )
-    return (user_daily_total + new_amount <= daily_limit) and (
-        user_monthly_total + new_amount <= monthly_limit
-    )

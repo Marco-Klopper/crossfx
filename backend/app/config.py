@@ -76,6 +76,18 @@ class Settings(BaseSettings):
     # How long a fetched rate is reused. Quoting is meant to be pure compute
     # (performance-testing/README.md), so the API must not be hit per request.
     fx_rate_cache_seconds: int = 300
+    # How old a cached rate may get before the api source stops serving
+    # it and lets the quote fail with a 503 instead.
+    #
+    # Falling back to the last good rate when a refresh fails is right --
+    # the whole send flow should not depend on a third party's uptime.
+    # But the fallback had no ceiling: it returned the same value
+    # indefinitely and never refreshed its expiry, so a provider down for
+    # two days meant quotes priced on a two-day-old rate, with nothing
+    # but a log line to say so. An hour is generous for a currency pair
+    # and still short enough that nobody prices a remittance off
+    # yesterday's market.
+    fx_rate_max_stale_seconds: int = 3600
 
     # How long a quote is honoured before the sender has to ask for a new
     # one. An unfunded quote holds limit headroom until it expires (§6).

@@ -1,11 +1,14 @@
 """
 Remittance limit enforcement (spec §6).
 
-`fee_service.check_within_limits` answers "does this amount fit?" given a
-sender's running totals. This module answers the harder question it
-deliberately leaves out: *which* remittances count, and over what window.
+This module owns the limit rule end to end: which remittances count, over
+what window, what the limits are for a given KYC status, and whether one
+more send fits. fee_service used to carry a second copy of the last two
+of those, reachable only from its own tests -- two implementations of a
+regulatory limit that could drift apart, which is worse than one.
 
-Two decisions live here, because nothing else in the codebase makes them:
+Three decisions live here, because nothing else in the codebase makes
+them:
 
   Window.  Calendar day and calendar month in South African time. The
   limits are a South African regulatory construct denominated in rand, so
@@ -14,8 +17,11 @@ Two decisions live here, because nothing else in the codebase makes them:
   work.
 
   Which rows.  Everything that is either settled or still on its way
-  there, plus quotes that are still live. A FAILED remittance frees its
-  headroom (no value left the sender), and so does an expired quote (they
+  there, plus quotes that are still live, plus failed settlements whose
+  cash-in was confirmed -- the sender's rand is gone in that last case
+  until someone refunds it, and releasing the headroom would hand back
+  the right to send money that has not come back. A REFUNDED remittance
+  frees it, as does a failure before cash-in and an expired quote (they
   never funded it). That is the honest reading of "how much have you sent
   this month", and it is the one that cannot be gamed by requesting a
   hundred quotes.

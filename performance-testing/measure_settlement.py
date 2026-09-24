@@ -1,7 +1,8 @@
 """
 Measures the two metrics the HTTP load test cannot see: message-queue
 throughput, and UCTUSD transaction processing time (the brief's
-"message-queue throughput" and "RLUSD transaction processing time").
+"message-queue throughput" and "RLUSD transaction processing time" -- the
+brief's own wording; the settlement token here is UCTUSD, see README).
 
 Why these are measured separately from locustfile.py: the API hands a
 remittance to the queue and returns. Everything after that happens in another
@@ -31,7 +32,26 @@ import sys
 import time
 from collections import Counter
 
-DEFAULT_DB = os.path.join("..", "backend", "crossfx.db")
+def _default_db() -> str:
+    """
+    Where to read the remittance timestamps from.
+
+    DATABASE_URL first, because that is what the backend itself is
+    configured with -- backend/.env.example ships a Postgres URL as the
+    documented default, and this script used to hardcode the SQLite file
+    and simply exit 1 against it. Only the sqlite:/// form is supported
+    (see _connect), but reading the setting at least means the script
+    reports the right problem instead of the wrong path.
+    """
+    url = os.environ.get("DATABASE_URL", "")
+    if url.startswith("sqlite:///"):
+        return url[len("sqlite:///") :]
+    if url:
+        return url
+    return os.path.join("..", "backend", "crossfx.db")
+
+
+DEFAULT_DB = _default_db()
 DEFAULT_REDIS = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 STREAM = os.environ.get("SETTLEMENT_STREAM_NAME", "crossfx-settlement-queue")
 GROUP = os.environ.get("SETTLEMENT_CONSUMER_GROUP", "crossfx-settlement-workers")
