@@ -44,6 +44,9 @@ from locust import FastHttpUser, between, events, task
 
 SEND_AMOUNT = os.environ.get("SEND_AMOUNT", "50.00")
 USERS_FILE = os.environ.get("USERS_FILE", "users.json")
+# Statuses a remittance will not move on from, so polling can stop.
+TERMINAL_STATUSES = frozenset({"settled", "failed", "refunded"})
+
 CASH_IN_METHOD = "agent_cash"
 
 # Counters for outcomes Locust's own statistics would misreport.
@@ -118,6 +121,9 @@ class Sender(FastHttpUser):
         credentials = next(self.environment.crossfx_users)
         self.beneficiary_id = credentials["beneficiary_id"]
         self.quoted = []
+        # Remittances that have been paid in and are now settling, for
+        # poll_status to watch.
+        self.tracked = []
         self.limit_reached = False
 
         with self.client.post(
@@ -197,12 +203,44 @@ class Sender(FastHttpUser):
                     if response.json().get("queued")
                     else "cash_in_not_queued"
                 )
+                self.tracked.append(remittance_id)
             elif response.status_code == 409:
                 # An expired quote, or one already confirmed.
                 response.success()
                 _count("cash_in_conflict")
             else:
                 response.failure(f"{response.status_code}: {response.text[:120]}")
+
+    @task(4)
+    def poll_status(self):
+        """
+        The endpoint the UI polls every three seconds per in-flight
+        transfer (frontend/src/screens/Send.jsx).
+
+        It had no coverage here at all, which left the highest-RPS
+        endpoint in the real system unmeasured: N senders watching a
+        settlement generate far more requests than the sends themselves.
+        The weight reflects that -- a sender polls a transfer many times
+        for each one they create.
+        """
+        if not self.headers or not self.tracked:
+            return
+        remittance_id = self.tracked[-1]
+        with self.client.get(
+            f"/remittances/{remittance_id}",
+            headers=self.headers,
+            name="GET /remittances/{id}",
+            catch_response=True,
+        ) as response:
+            if response.status_code == 200:
+                response.success()
+                _count(f"poll_{response.json()['status']}")
+                if response.json()["status"] in TERMINAL_STATUSES:
+                    self.tracked.pop()
+            else:
+                response.failure(
+                    f"{response.status_code}: {response.text[:120]}"
+                )
 
     @task(1)
     def wallet(self):

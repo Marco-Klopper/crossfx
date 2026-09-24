@@ -46,8 +46,24 @@ export default function Kyc({ me, onReviewed }) {
     load()
   }, [])
 
+  // Keep the prefilled identity fields in step with the session. They were
+  // seeded at mount only, so a profile refresh that did not remount this
+  // screen left a stale name and email in the form.
+  useEffect(() => {
+    setForm((previous) => ({
+      ...previous,
+      fullName: previous.fullName || me.full_name,
+      email: previous.email || me.email,
+    }))
+  }, [me.full_name, me.email])
+
   function set(field) {
-    return (event) => setForm({ ...form, [field]: event.target.value })
+    // Functional, so browser autofill firing several fields in one tick
+    // cannot drop all but the last.
+    return (event) => {
+      const { value } = event.target
+      setForm((previous) => ({ ...previous, [field]: value }))
+    }
   }
 
   async function submit(event) {
@@ -120,6 +136,17 @@ export default function Kyc({ me, onReviewed }) {
         )}
       </div>
 
+      {/*
+        Outside the canApply branch on purpose. Submitting sets `notice`, then
+        load() flips the status to `pending` -- which unmounts that branch on
+        the very same render, so the confirmation this sets could never be
+        seen. The load() error path had the same problem in reverse: it is
+        reachable whatever the status, but the alert was only mounted while
+        the form was.
+      */}
+      <Alert kind="error">{error}</Alert>
+      <Alert kind="success">{notice}</Alert>
+
       {canApply ? (
         <div className="card">
           <h2>Submit a KYC application</h2>
@@ -127,9 +154,6 @@ export default function Kyc({ me, onReviewed }) {
             Mock verification — nothing is checked against a real identity
             register.
           </p>
-
-          <Alert kind="error">{error}</Alert>
-          <Alert kind="success">{notice}</Alert>
 
           <form onSubmit={submit}>
             <div className="field-row">

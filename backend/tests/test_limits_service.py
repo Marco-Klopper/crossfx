@@ -67,6 +67,7 @@ def make_remittance(db_session, sender):
         created_at=NOW,
         status=RemittanceStatus.SETTLED,
         quote_expires_at=None,
+        cash_in_confirmed=False,
     ):
         remittance = Remittance(
             idempotency_key=uuid.uuid4().hex,
@@ -84,6 +85,13 @@ def make_remittance(db_session, sender):
             quote_expires_at=(
                 quote_expires_at.astimezone(timezone.utc).replace(tzinfo=None)
                 if quote_expires_at is not None
+                else None
+            ),
+            # Whether the sender's rand was actually taken. It is what
+            # decides whether a FAILED row still holds headroom.
+            cash_in_confirmed_at=(
+                created_at.astimezone(timezone.utc).replace(tzinfo=None)
+                if cash_in_confirmed
                 else None
             ),
         )
@@ -160,11 +168,40 @@ class TestWhichRemittancesCount:
         daily, _ = sender_totals(db_session, sender.id, NOW)
         assert daily == Decimal("1000.00")
 
-    def test_a_failed_remittance_gives_its_headroom_back(
+    def test_a_failure_before_cash_in_gives_its_headroom_back(
         self, db_session, sender, make_remittance
     ):
         """No value left the sender, so it cannot count against them."""
-        make_remittance(status=RemittanceStatus.FAILED)
+        make_remittance(status=RemittanceStatus.FAILED, cash_in_confirmed=False)
+        assert sender_totals(db_session, sender.id, NOW) == (
+            Decimal("0"),
+            Decimal("0"),
+        )
+
+    def test_a_failure_after_cash_in_keeps_holding_headroom(
+        self, db_session, sender, make_remittance
+    ):
+        """
+        This test used to assert the opposite, and it was wrong.
+
+        A settlement can only fail *after* cash-in is confirmed, so the
+        common FAILED row is one where the sender's rand has gone and the
+        recipient was never credited. Releasing the headroom there handed
+        back the right to send money that had not come back yet. It is
+        held until the remittance is refunded.
+        """
+        make_remittance(status=RemittanceStatus.FAILED, cash_in_confirmed=True)
+        daily, monthly = sender_totals(db_session, sender.id, NOW)
+        assert daily == Decimal("1000.00")
+        assert monthly == Decimal("1000.00")
+
+    def test_a_refund_gives_the_headroom_back(
+        self, db_session, sender, make_remittance
+    ):
+        """REFUNDED is the point at which the money genuinely is back."""
+        make_remittance(
+            status=RemittanceStatus.REFUNDED, cash_in_confirmed=True
+        )
         assert sender_totals(db_session, sender.id, NOW) == (
             Decimal("0"),
             Decimal("0"),
@@ -274,3 +311,26 @@ class TestAssertWithinLimits:
             assert_within_limits(db_session, sender, Decimal("2000"), NOW)
 
         assert exc_info.value.period == "daily"
+
+
+class TestLimitBoundary:
+    """
+    The exact boundary, which used to be pinned against a second copy of
+    this rule in fee_service.check_within_limits. That copy has been
+    removed -- one implementation of a regulatory limit, tested here.
+    """
+
+    def test_the_limit_itself_fits(self, db_session, sender):
+        """3 000 of a 3 000 limit is allowed; 3 000.01 is not."""
+        usage = assert_within_limits(db_session, sender, Decimal("3000"), NOW)
+        assert usage.daily_limit == Decimal("3000")
+
+        with pytest.raises(LimitExceededError):
+            assert_within_limits(db_session, sender, Decimal("3000.01"), NOW)
+
+    def test_an_unverified_sender_may_send_nothing(
+        self, db_session, user_factory
+    ):
+        unverified = user_factory(email="unverified.sender@example.com")
+        with pytest.raises(LimitExceededError):
+            assert_within_limits(db_session, unverified, Decimal("1"), NOW)

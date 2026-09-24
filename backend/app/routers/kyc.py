@@ -34,6 +34,21 @@ def submit_kyc(
             detail="A pending or approved KYC application already exists for this user",
         )
 
+    # The application is what flips *this* account to APPROVED, but
+    # every identity field in it was free text: nothing checked that the
+    # email, name or ID number described the person submitting it. That
+    # let someone KYC their own account using another person's
+    # documents. Binding the email is the cheapest check that makes the
+    # application about its own account.
+    if payload.email.strip().lower() != current_user.email.strip().lower():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "The email on a KYC application must be the address the "
+                "account is registered under"
+            ),
+        )
+
     application = KYCApplication(user_id=current_user.id, **payload.model_dump())
     db.add(application)
     current_user.kyc_status = KYCStatus.PENDING

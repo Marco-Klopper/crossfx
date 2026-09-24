@@ -3,6 +3,8 @@ Centralised app configuration, loaded from environment variables (.env).
 Keep all "magic numbers" (fees, limits, margins) here so they stay configurable
 per the project brief's requirement that all fees/limits be configurable.
 """
+from decimal import Decimal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,7 +53,11 @@ class Settings(BaseSettings):
     # api   — a public FX endpoint, cached for fx_rate_cache_seconds
     # table — the latest row in the fx_rates table (scripts/seed_fx_rates.py)
     exchange_rate_source: str = "mock"
-    fixed_remittance_fee_zar: float = 25
+    # Decimal, not float: every one of these is money or a rate, and
+    # services already had to write Decimal(str(...)) at each use site to
+    # keep IEEE-754 out of the money path. Declaring them correctly here
+    # means the conversion is not something a new call site can forget.
+    fixed_remittance_fee_zar: Decimal = Decimal("25")
     percent_fee_bps: int = 150
     fx_margin_bps: int = 100
     cashout_fee_bps: int = 100
@@ -59,7 +65,7 @@ class Settings(BaseSettings):
     # The rate the mock oscillates around, and how far it may drift either
     # way. Both are config so a demo can be pinned to a flat rate by setting
     # the volatility to 0.
-    fx_mock_base_rate: float = 18.50
+    fx_mock_base_rate: Decimal = Decimal("18.50")
     fx_mock_volatility_bps: int = 150
 
     # Free, keyless USD-base endpoint: {"rates": {"ZAR": 18.42, ...}}. The
@@ -70,16 +76,28 @@ class Settings(BaseSettings):
     # How long a fetched rate is reused. Quoting is meant to be pure compute
     # (performance-testing/README.md), so the API must not be hit per request.
     fx_rate_cache_seconds: int = 300
+    # How old a cached rate may get before the api source stops serving
+    # it and lets the quote fail with a 503 instead.
+    #
+    # Falling back to the last good rate when a refresh fails is right --
+    # the whole send flow should not depend on a third party's uptime.
+    # But the fallback had no ceiling: it returned the same value
+    # indefinitely and never refreshed its expiry, so a provider down for
+    # two days meant quotes priced on a two-day-old rate, with nothing
+    # but a log line to say so. An hour is generous for a currency pair
+    # and still short enough that nobody prices a remittance off
+    # yesterday's market.
+    fx_rate_max_stale_seconds: int = 3600
 
     # How long a quote is honoured before the sender has to ask for a new
     # one. An unfunded quote holds limit headroom until it expires (§6).
     quote_ttl_minutes: int = 15
 
     # Remittance limits (ZAR)
-    unverified_daily_limit: float = 0
-    unverified_monthly_limit: float = 0
-    verified_daily_limit: float = 3000
-    verified_monthly_limit: float = 25000
+    unverified_daily_limit: Decimal = Decimal("0")
+    unverified_monthly_limit: Decimal = Decimal("0")
+    verified_daily_limit: Decimal = Decimal("3000")
+    verified_monthly_limit: Decimal = Decimal("25000")
 
     # Queue (Redis Streams — one of the brokers the brief names)
     queue_backend: str = "redis"
@@ -88,6 +106,17 @@ class Settings(BaseSettings):
     settlement_consumer_group: str = "crossfx-settlement-workers"
     # How long a worker blocks waiting for a message before looping (ms).
     settlement_block_ms: int = 5000
+    # How long a message must sit unacked in another consumer's pending
+    # list before a live worker may take it over (XAUTOCLAIM). This is
+    # the recovery path for a worker that died mid-settlement: its
+    # consumer name carries its PID, so nothing else would ever claim
+    # them. Comfortably longer than any healthy settlement takes.
+    settlement_reclaim_idle_ms: int = 60_000
+    # How long to wait before retrying the consume loop after an
+    # unexpected error (a Redis blip, a database hiccup). The loop used
+    # to have no handler at all, so one such error ended the process and
+    # settlement stopped silently.
+    settlement_error_backoff_seconds: float = 5.0
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

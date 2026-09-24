@@ -8,8 +8,30 @@ recipient half of that flow. What is here is the admin cash-in confirmation
 settlement message that never reached the queue.
 """
 import uuid
+from decimal import Decimal
 
+import pytest
+
+from app.config import settings
 from app.models.remittance import Remittance, RemittanceStatus
+
+
+@pytest.fixture(autouse=True)
+def pinned_limits(monkeypatch):
+    """
+    Pins the configured limits for this module.
+
+    The assertions below name exact figures, and app/config.py loads
+    .env at import - so without this, editing VERIFIED_DAILY_LIMIT in a
+    developer's own .env broke tests that have nothing to do with the
+    change. Every other test module that asserts figures already pins
+    them this way.
+    """
+    monkeypatch.setattr(settings, "unverified_daily_limit", Decimal("0"))
+    monkeypatch.setattr(settings, "unverified_monthly_limit", Decimal("0"))
+    monkeypatch.setattr(settings, "verified_daily_limit", Decimal("3000"))
+    monkeypatch.setattr(settings, "verified_monthly_limit", Decimal("25000"))
+
 
 
 def _valid_application(**overrides):
@@ -76,7 +98,10 @@ def test_approve_flips_both_statuses_and_stamps_reviewer(client, auth_headers, a
 
     me = client.get("/auth/me", headers=headers).json()
     assert me["kyc_status"] == "approved"
-    assert me["limits"] == {"daily_limit_zar": 3000.0, "monthly_limit_zar": 25000.0}
+    assert me["limits"] == {
+        "daily_limit_zar": "3000",
+        "monthly_limit_zar": "25000",
+    }
 
 
 def test_approve_twice_conflicts(client, auth_headers, admin_headers):

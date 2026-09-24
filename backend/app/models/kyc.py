@@ -11,7 +11,7 @@ routers/admin.py's approve/reject endpoints are what keep the two in sync:
 """
 import enum
 import uuid
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, Date, DateTime, Enum, ForeignKey, String, Uuid
 from sqlalchemy.orm import relationship

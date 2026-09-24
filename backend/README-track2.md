@@ -82,7 +82,7 @@ python -m scripts.init_platform_wallets --send-pool-seed sEd... --payout-pool-se
 **Nothing will settle until you do this.** The XRP faucet funds XRP for reserves
 and TrustSet costs only — it does not give you the settlement token.
 
-The class settles in **UCTUSD**, a lecturer-issued Testnet IOU, the lecturer-issued Testnet IOU
+The class settles in **UCTUSD**, a lecturer-issued Testnet IOU
 (course announcement, 2026-09-08). `.env.example` already carries the real values:
 
 | | |

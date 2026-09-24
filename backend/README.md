@@ -232,11 +232,22 @@ This is why local dev can run entirely on SQLite with zero infrastructure while
 ## 8. Testing
 
 ```bash
-pytest -v
+pytest -q                                  # the suite
+pytest -q --cov=app --cov=worker           # with coverage (currently 97%)
+ruff check .                               # lint; config in pyproject.toml
 ```
 
-38 tests, no Postgres/Redis/XRPL needed, runs in a few seconds — everything hits an
-in-memory SQLite database created fresh per test.
+Run from `backend/`: `pytest.ini` and `app/config.py`'s relative `env_file=".env"`
+both assume it.
+
+364 tests, no Postgres/Redis/XRPL/network needed — everything hits an in-memory
+SQLite database created fresh per test, with the queue and the XRPL client faked.
+The run takes a few seconds; `conftest.py` drops the bcrypt cost factor for the
+suite, which is otherwise about 95% of its wall clock.
+
+The table below lists Track 1's own modules; the full suite is seventeen files,
+covering the settlement worker, the queue, the ledger, FX, fees, limits, cash-out
+and the audit regressions as well.
 
 | File | Covers |
 |---|---|
@@ -245,7 +256,18 @@ in-memory SQLite database created fresh per test.
 | `test_kyc.py` | apply, double-apply conflict, age validation, status |
 | `test_beneficiaries.py` | CRUD, duplicate conflict, cross-user 404 isolation |
 | `test_admin.py` | the 403 gate on every admin route, review queue, approve/reject |
-| `test_migrations.py` | runs `alembic upgrade head` against a throwaway file and checks the result matches `Base.metadata` table-for-table — catches a model change with no matching migration |
+| `test_migrations.py` | runs the chain against a throwaway file and checks the result matches `Base.metadata` — columns, types, nullability, unique constraints, foreign keys and indexes — then downgrades to base and upgrades again |
+
+Also in `tests/`, beyond Track 1's own:
+
+| File | Covers |
+|---|---|
+| `test_wallet.py`, `test_ledger.py` | balances, the multi-currency ledger, entry immutability |
+| `test_remittances.py`, `test_fee_service.py`, `test_fx_rate_service.py`, `test_limits_service.py` | the quote path end to end, and each service on its own |
+| `test_cash_out.py` | request, approve, reject, and the refund leg |
+| `test_settlement_worker.py`, `test_settlement_queue.py`, `test_xrpl_service.py` | the asynchronous half: claiming, idempotency, reclaiming an abandoned message, ack semantics |
+| `test_encryption.py` | the private-key story: round trip, and that a tampered or foreign ciphertext is refused |
+| `test_audit_regressions.py` | one test per defect the 24 Sep audit found |
 
 **`conftest.py`'s import-order gotcha:** `app.config.Settings()` and
 `app.security.encryption`'s `Fernet(...)` both validate at *import* time, not call

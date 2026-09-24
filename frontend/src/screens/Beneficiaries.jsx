@@ -14,7 +14,12 @@ import { Alert, when } from '../ui.jsx'
  * telling the sender up front is cheaper than letting them find out when they
  * try to pay.
  */
-const CURRENCIES = ['USD', 'ZAR', 'EUR', 'GBP', 'UCTUSD']
+// Only what the corridor can actually price. EUR and GBP used to be offered
+// here and the API accepted them on the beneficiary, but a quote silently fell
+// back to a USD estimate and cash-out refused them outright -- so choosing one
+// got you dollars with no explanation. The backend allowlist has been narrowed
+// to match.
+const CURRENCIES = ['USD', 'ZAR', 'UCTUSD']
 
 const EMPTY = {
   fullName: '',
@@ -30,12 +35,16 @@ export default function Beneficiaries() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const [removingId, setRemovingId] = useState(null)
 
   async function load() {
     try {
       setRows(await api.listBeneficiaries())
     } catch (err) {
       setError(err.detail || err.message)
+    } finally {
+      setLoaded(true)
     }
   }
 
@@ -44,7 +53,13 @@ export default function Beneficiaries() {
   }, [])
 
   function set(field) {
-    return (event) => setForm({ ...form, [field]: event.target.value })
+    // The functional form matters: browser autofill can fire several of these
+    // in one tick, and `{ ...form }` captured at render time would then drop
+    // every field but the last.
+    return (event) => {
+      const { value } = event.target
+      setForm((previous) => ({ ...previous, [field]: value }))
+    }
   }
 
   async function submit(event) {
@@ -65,16 +80,31 @@ export default function Beneficiaries() {
   }
 
   async function remove(row) {
+    // Deleting was immediate on a single click, with no busy guard -- so a
+    // double-click fired two DELETEs and the second came back "Beneficiary
+    // not found", which reads like the first one failed.
+    if (removingId) return
+    if (
+      !window.confirm(
+        `Remove ${row.full_name} (${row.contact}) from your recipients?`,
+      )
+    ) {
+      return
+    }
     setError('')
     setNotice('')
+    setRemovingId(row.id)
     try {
       await api.deleteBeneficiary(row.id)
+      setNotice(`${row.full_name} removed.`)
       await load()
     } catch (err) {
       // A 409 means the recipient has remittances against them — the
       // settlement worker resolves the recipient through this row, so it
       // cannot be deleted.
       setError(err.detail || err.message)
+    } finally {
+      setRemovingId(null)
     }
   }
 
@@ -97,9 +127,10 @@ export default function Beneficiaries() {
               <input id="b-name" value={form.fullName} onChange={set('fullName')} required />
             </div>
             <div className="field">
-              <label htmlFor="b-contact">Mobile number or email</label>
+              <label htmlFor="b-contact">Recipient&apos;s email address</label>
               <input
                 id="b-contact"
+                type="email"
                 value={form.contact}
                 onChange={set('contact')}
                 placeholder="bob@example.com"
@@ -153,7 +184,9 @@ export default function Beneficiaries() {
 
       <div className="card">
         <h2>Your recipients</h2>
-        {rows.length === 0 ? (
+        {!loaded ? (
+          <p className="empty">Loading…</p>
+        ) : rows.length === 0 ? (
           <p className="empty">No recipients yet.</p>
         ) : (
           <div className="table-scroll">

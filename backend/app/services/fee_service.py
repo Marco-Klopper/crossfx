@@ -17,7 +17,7 @@ rate, which billed the same spread twice and made the disclosed
 fee plus the margin, and nothing else.
 """
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 
 from app.config import settings
 
@@ -28,6 +28,12 @@ TOKEN_QUANTUM = Decimal("0.000001")
 RATE_QUANTUM = Decimal("0.000001")
 
 SETTLEMENT_CURRENCY = "UCTUSD"
+# The corridor's send-side fiat. Named for the same reason
+# SETTLEMENT_CURRENCY is: worker/settlement_worker.py used to hardcode
+# "ZAR" and "UCTUSD" as string literals, which meant a change to
+# SUPPORTED_CURRENCIES could break a ledger write *after* the on-chain
+# payment had already gone out.
+SEND_CURRENCY = "ZAR"
 # UCTUSD is a USD-denominated IOU, so a USD payout is 1:1 by definition;
 # ZAR is converted at the same mid-market rate the quote used. Anything
 # else would need its own rate feed, which this prototype does not have.
@@ -212,35 +218,4 @@ def calculate_cash_out_payout(
         payout_currency=code,
         payout_amount=convert_from_uctusd(net, code, usd_zar_rate),
         fx_rate=usd_zar_rate,
-    )
-
-
-def check_within_limits(
-    user_daily_total: Decimal,
-    user_monthly_total: Decimal,
-    new_amount: Decimal,
-    is_verified: bool,
-) -> bool:
-    """
-    Whether one more remittance of `new_amount` fits inside the sender's
-    limits (spec §6). The running totals are computed by
-    app.services.limits_service, which owns the question of *which*
-    remittances count.
-    """
-    daily_limit = Decimal(
-        str(
-            settings.verified_daily_limit
-            if is_verified
-            else settings.unverified_daily_limit
-        )
-    )
-    monthly_limit = Decimal(
-        str(
-            settings.verified_monthly_limit
-            if is_verified
-            else settings.unverified_monthly_limit
-        )
-    )
-    return (user_daily_total + new_amount <= daily_limit) and (
-        user_monthly_total + new_amount <= monthly_limit
     )

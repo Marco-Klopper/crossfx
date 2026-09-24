@@ -12,7 +12,19 @@
 
 // The API's own origin. The backend allows this frontend cross-origin
 // (CORS_ORIGINS in backend/.env), so we call it directly with no dev proxy.
-export const API_BASE = 'http://127.0.0.1:8000'
+//
+// Set VITE_API_BASE to point a build somewhere else -- put it in
+// frontend/.env.local, or pass it on the command line. The default is the
+// local uvicorn, which is what a demo on one machine wants. This used to be a
+// hard-coded constant, which meant the app could not be built for any host
+// without editing source.
+export const API_BASE =
+  import.meta.env?.VITE_API_BASE?.replace(/\/+$/, '') || 'http://127.0.0.1:8000'
+
+// Give up on a request that has produced nothing at all by this point. Without
+// it a hung backend left `busy` true forever: the button read "Pricing…"
+// indefinitely with no way out but a page reload.
+const REQUEST_TIMEOUT_MS = 20000
 
 const TOKEN_KEY = 'crossfx.token'
 
@@ -32,6 +44,22 @@ export function clearToken() {
 
 export function isLoggedIn() {
   return Boolean(getToken())
+}
+
+/**
+ * Called when the API rejects our token.
+ *
+ * request() clears the stored token on a 401, but clearing it told React
+ * nothing: App kept `me` set, so the logged-in shell stayed mounted and every
+ * subsequent click failed with a red "Could not validate credentials" until
+ * the user thought to reload the page by hand. Access tokens last 60 minutes
+ * (backend/app/config.py), so a demo or a working session longer than that hit
+ * this every time. App registers a handler here and drops its session state.
+ */
+let onUnauthorized = () => {}
+
+export function setUnauthorizedHandler(handler) {
+  onUnauthorized = typeof handler === 'function' ? handler : () => {}
 }
 
 // -- the request layer -----------------------------------------------------
@@ -72,8 +100,11 @@ function messageFrom(body, status) {
   return `Request failed (${status})`
 }
 
-async function request(path, { method = 'GET', body, auth = true } = {}) {
-  const headers = {}
+async function request(
+  path,
+  { method = 'GET', body, auth = true, headers: extraHeaders } = {},
+) {
+  const headers = { ...extraHeaders }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (auth) {
     const token = getToken()
@@ -81,31 +112,61 @@ async function request(path, { method = 'GET', body, auth = true } = {}) {
   }
 
   let response
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   try {
     response = await fetch(`${API_BASE}${path}`, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: controller.signal,
     })
   } catch (networkError) {
     // fetch() only rejects when the request never completed — the API is
-    // down, or CORS refused it before a response existed.
+    // down, CORS refused it before a response existed, or we gave up waiting.
+    if (networkError?.name === 'AbortError') {
+      throw new ApiError(
+        0,
+        `The API at ${API_BASE} did not respond within ${
+          REQUEST_TIMEOUT_MS / 1000
+        } seconds.`,
+      )
+    }
     throw new ApiError(
       0,
       `Could not reach the API at ${API_BASE}. Is uvicorn running?`,
     )
+  } finally {
+    clearTimeout(timeout)
   }
 
   if (response.status === 204) return null
 
   const text = await response.text()
-  const payload = text ? JSON.parse(text) : null
+  let payload = null
+  try {
+    payload = text ? JSON.parse(text) : null
+  } catch {
+    // Not JSON. A 502 HTML page from a proxy, or an unhandled error rendered
+    // as text, used to throw a raw SyntaxError here -- which is not an
+    // ApiError, so screens reading `err.detail` rendered
+    // "Unexpected token '<'" at the user. Keep the body as the message when
+    // it is short enough to be one.
+    const snippet = text.trim().slice(0, 200)
+    throw new ApiError(
+      response.status,
+      response.ok
+        ? `The API returned a response this app could not read: ${snippet}`
+        : snippet || `Request failed (${response.status})`,
+    )
+  }
 
   if (!response.ok) {
     if (response.status === 401 && auth) {
       // The token is expired or invalid; drop it so the app returns to login
       // rather than looping on 401s with a token it will never use again.
       clearToken()
+      onUnauthorized()
     }
     throw new ApiError(response.status, messageFrom(payload, response.status))
   }
@@ -149,7 +210,7 @@ export function logout() {
   return done
 }
 
-/** Profile, KYC status and the caller's applicable transaction limits. */
+/** Profile, admin flag, KYC status and the caller's transaction limits. */
 export function getMe() {
   return request('/auth/me')
 }
@@ -282,10 +343,13 @@ export function getTransactions() {
  * Requests a fiat payout. The UCTUSD leaves the balance immediately; the
  * fiat arrives when an admin approves it.
  */
-export function requestCashOut({ uctusdAmount, payoutCurrency }) {
+export function requestCashOut({ uctusdAmount, payoutCurrency, idempotencyKey }) {
   return request('/wallet/cash-out', {
     method: 'POST',
     body: { uctusd_amount: uctusdAmount, payout_currency: payoutCurrency },
+    // The API dedupes on this, so a retried or double-submitted request
+    // returns the original payout instead of debiting the balance twice.
+    headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
   })
 }
 

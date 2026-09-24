@@ -13,6 +13,7 @@ import pytest
 
 from app.config import settings
 from app.models.remittance import CashOut, CashOutStatus
+from app.schemas.remittance import CashOutRead
 from app.services.ledger import Ledger
 
 
@@ -421,16 +422,24 @@ class TestListing:
 
 
 class TestKeyMaterial:
-    def test_the_cash_out_surface_exposes_no_key_material(
+    def test_the_cash_out_surface_returns_only_declared_fields(
         self, client, funded_recipient
     ):
-        """Under pooled custody a recipient has no XRPL identity (§9.1)."""
+        """
+        Under pooled custody a recipient has no XRPL identity (§9.1).
+
+        Checked against CashOutRead's declared fields rather than by
+        searching the body for "seed" -- that substring test passed for
+        anything leaked under a differently-named key, and would have
+        failed falsely on any user-supplied text containing the word.
+        """
         headers, _ = funded_recipient
-        body = client.post(
+        response = client.post(
             "/wallet/cash-out",
             json={"uctusd_amount": "10", "payout_currency": "USD"},
             headers=headers,
-        ).text
+        )
+        assert response.status_code == 201
 
-        assert "seed" not in body.lower()
-        assert "xrpl_address" not in body
+        undeclared = set(response.json()) - set(CashOutRead.model_fields)
+        assert not undeclared, f"cash-out returned undeclared field(s) {undeclared}"

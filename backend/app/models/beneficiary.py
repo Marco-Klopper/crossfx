@@ -23,7 +23,7 @@ class Beneficiary(Base):
     sender_id = Column(Uuid, ForeignKey("users.id"), nullable=False)
 
     full_name = Column(String, nullable=False)
-    contact = Column(String, nullable=False)  # mobile number or email
+    contact = Column(String, nullable=False)  # the recipient's registered login email (see schemas/beneficiary.py)
     country = Column(String, nullable=False)
     preferred_payout_currency = Column(String, nullable=False)  # e.g. USD, UCTUSD
     relationship_to_sender = Column(String, nullable=False)

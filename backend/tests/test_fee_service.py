@@ -16,7 +16,6 @@ from app.services.fee_service import (
     UnsupportedPayoutCurrencyError,
     calculate_cash_out_payout,
     calculate_quote,
-    check_within_limits,
     convert_from_uctusd,
 )
 
@@ -186,41 +185,3 @@ class TestConversion:
         assert convert_from_uctusd(
             Decimal("1.000000"), " zar ", RATE
         ) == Decimal("18.50")
-
-
-class TestLimits:
-    @pytest.fixture(autouse=True)
-    def default_limits(self, monkeypatch):
-        monkeypatch.setattr(settings, "verified_daily_limit", 3000)
-        monkeypatch.setattr(settings, "verified_monthly_limit", 25000)
-        monkeypatch.setattr(settings, "unverified_daily_limit", 0)
-        monkeypatch.setattr(settings, "unverified_monthly_limit", 0)
-
-    def test_allows_a_send_inside_both_limits(self):
-        assert check_within_limits(
-            Decimal("500"), Decimal("2000"), Decimal("1000"), True
-        )
-
-    def test_the_limit_itself_is_allowed(self):
-        """3 000 of a 3 000 limit fits; 3 000.01 does not."""
-        assert check_within_limits(
-            Decimal("0"), Decimal("0"), Decimal("3000"), True
-        )
-        assert not check_within_limits(
-            Decimal("0"), Decimal("0"), Decimal("3000.01"), True
-        )
-
-    def test_blocks_a_send_over_the_daily_limit(self):
-        assert not check_within_limits(
-            Decimal("2500"), Decimal("2500"), Decimal("1000"), True
-        )
-
-    def test_blocks_a_send_over_the_monthly_limit(self):
-        assert not check_within_limits(
-            Decimal("0"), Decimal("24500"), Decimal("1000"), True
-        )
-
-    def test_an_unverified_sender_may_send_nothing(self):
-        assert not check_within_limits(
-            Decimal("0"), Decimal("0"), Decimal("1"), False
-        )

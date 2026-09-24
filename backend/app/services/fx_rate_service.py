@@ -23,7 +23,8 @@ import hashlib
 import logging
 import threading
 import time
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 from sqlalchemy.orm import Session
@@ -85,7 +86,7 @@ def _mock_rate(now: float | None = None) -> Decimal:
     if volatility == 0:
         return _quantise(base)
 
-    bucket = int((now if now is not None else time.time())) // max(
+    bucket = int(now if now is not None else time.time()) // max(
         settings.fx_rate_cache_seconds, 1
     )
     digest = hashlib.sha256(str(bucket).encode()).digest()
@@ -101,7 +102,10 @@ def _mock_rate(now: float | None = None) -> Decimal:
 # Module-level cache guarded by a lock: several request threads share one
 # process, and without the lock a burst of quotes would each fire their own
 # HTTP request while the cache is cold.
-_api_cache: dict[str, tuple[float, Decimal]] = {}
+# (expires_at, rate, fetched_at). fetched_at is what bounds how stale a
+# fallback may get; without it the cache could not tell "refreshed a
+# minute ago" from "last succeeded on Tuesday".
+_api_cache: dict[str, tuple[float, Decimal, float]] = {}
 _api_lock = threading.Lock()
 
 
@@ -120,24 +124,47 @@ def _api_rate() -> Decimal:
             rate = _quantise(_fetch_rate())
         except Exception as exc:
             if cached is not None:
-                # Stale but real beats failing the quote. The alternative —
-                # refusing to quote whenever the provider blips — would make
-                # the whole send flow depend on a third party's uptime.
-                logger.warning(
-                    "FX refresh failed (%s), serving the last good rate %s",
-                    exc,
-                    cached[1],
-                )
-                return cached[1]
+                return _fallback(cached, exc)
             raise FxRateUnavailableError(
                 f"Could not fetch USD/ZAR from {settings.fx_api_url}: {exc}"
             ) from exc
 
+        now = time.time()
         _api_cache[settings.fx_api_url] = (
-            time.time() + settings.fx_rate_cache_seconds,
+            now + settings.fx_rate_cache_seconds,
             rate,
+            now,
         )
         return rate
+
+
+def _fallback(cached: tuple[float, Decimal, float], exc: Exception) -> Decimal:
+    """
+    The last good rate, if it is still recent enough to price with.
+
+    Stale but real beats failing the quote — refusing to quote whenever
+    the provider blips would make the whole send flow depend on a third
+    party's uptime. Past fx_rate_max_stale_seconds that argument stops
+    holding: a rate old enough to be wrong is worse than no rate, because
+    the sender is held to it.
+    """
+    _expires_at, rate, fetched_at = cached
+    age = time.time() - fetched_at
+    if age > settings.fx_rate_max_stale_seconds:
+        raise FxRateUnavailableError(
+            f"Could not fetch USD/ZAR from {settings.fx_api_url} ({exc}), and "
+            f"the last good rate is {int(age)}s old — older than the "
+            f"{settings.fx_rate_max_stale_seconds}s this corridor will price "
+            f"against"
+        ) from exc
+
+    logger.warning(
+        "FX refresh failed (%s), serving the last good rate %s (%ss old)",
+        exc,
+        rate,
+        int(age),
+    )
+    return rate
 
 
 def _fetch_rate() -> Decimal:
@@ -193,15 +220,25 @@ def _table_rate(db: Session | None) -> Decimal:
             "db to get_usd_zar_rate()"
         )
 
+    # effective_from <= now, so a row seeded with a future date is a
+    # *scheduled* rate change rather than one that takes effect the
+    # moment it is inserted. Without the filter, seeding tomorrow's rate
+    # silently repriced today's quotes — and broke the append-only
+    # table's whole point, which is that a quote can be explained
+    # afterwards by the rate that was current when it was issued.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     row = (
         db.query(FxRate)
-        .filter(FxRate.currency_pair == FxRate.USD_ZAR)
+        .filter(
+            FxRate.currency_pair == FxRate.USD_ZAR,
+            FxRate.effective_from <= now,
+        )
         .order_by(FxRate.effective_from.desc())
         .first()
     )
     if row is None:
         raise FxRateUnavailableError(
-            "No USD/ZAR row in fx_rates. Seed one with: "
+            "No USD/ZAR row in fx_rates effective now. Seed one with: "
             "python -m scripts.seed_fx_rates --rate 18.50"
         )
     return _quantise(Decimal(row.rate))

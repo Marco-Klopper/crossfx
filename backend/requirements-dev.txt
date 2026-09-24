@@ -1,0 +1,16 @@
+# Development and CI dependencies. Install alongside requirements.txt:
+#     pip install -r requirements.txt -r requirements-dev.txt
+#
+# Kept separate so a deployment does not pull a load-test harness.
+
+-r requirements.txt
+
+# Linting. Config lives in pyproject.toml.
+ruff==0.16.8
+
+# Load testing (performance-testing/). locust was never declared
+# anywhere, and seed_users.py imports requests, which only worked
+# because locust happens to depend on it -- an accidental dependency
+# rather than a stated one.
+locust==2.32.2
+requests==2.32.3

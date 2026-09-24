@@ -51,4 +51,10 @@ class User(Base):
     remittances = relationship(
         "Remittance", back_populates="sender", foreign_keys="Remittance.sender_id"
     )
-    cash_outs = relationship("CashOut", back_populates="user")
+    # foreign_keys is required here for the same reason as
+    # kyc_applications above: cash_outs now carries a second FK back to
+    # users (reviewed_by_admin_id, the admin who released the payout),
+    # which SQLAlchemy cannot otherwise disambiguate.
+    cash_outs = relationship(
+        "CashOut", back_populates="user", foreign_keys="CashOut.user_id"
+    )

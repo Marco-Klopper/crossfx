@@ -14,15 +14,22 @@ import os
 from cryptography.fernet import Fernet
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
-os.environ.setdefault("DATABASE_URL", "sqlite://")  # unused directly; tests override get_db
+# Assigned, NOT setdefault: a DATABASE_URL exported in the developer's
+# shell would otherwise survive, and app/database.py:10 binds its engine
+# to settings.database_url at import time. Every test overrides get_db,
+# so nothing reads that engine today — but one test that forgets to, or
+# one worker call without an explicit db=, would write to the real
+# database. Pinning it here makes that impossible rather than unlikely.
+os.environ["DATABASE_URL"] = "sqlite://"
 os.environ.setdefault("PRIVATE_KEY_ENCRYPTION_KEY", Fernet.generate_key().decode())
 os.environ.setdefault("UCTUSD_ISSUER_ADDRESS", "rTestIssuerAddressXXXXXXXXXXXXXXXX")
 os.environ.setdefault(
     "UCTUSD_CURRENCY_CODE", "5543545553440000000000000000000000000000"
 )
 
-import pytest
 from decimal import Decimal
+
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -34,10 +41,33 @@ from app.models.beneficiary import Beneficiary
 from app.models.remittance import Remittance, RemittanceStatus
 from app.models.user import KYCStatus, User
 from app.models.wallet import PlatformWallet, PoolRole
-from app.services import cashin_cashout_service
 from app.security.encryption import encrypt_seed
 from app.security.hashing import hash_password
 from app.security.jwt import create_access_token
+from app.services import cashin_cashout_service
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cheap_password_hashing():
+    """
+    Drops the bcrypt cost factor for the suite.
+
+    passlib's default cost of 12 is ~0.29s per hash on this hardware, and
+    the factories below mint two or three users per test — which made the
+    suite roughly 95% key derivation and 73 seconds long. The tests care
+    that hashing round-trips and that a wrong password fails, neither of
+    which depends on the cost. Production is untouched: nothing outside
+    this fixture changes app.security.hashing.pwd_context, and the
+    application imports it fresh.
+    """
+    from passlib.context import CryptContext
+
+    from app.security import hashing
+
+    original = hashing.pwd_context
+    hashing.pwd_context = CryptContext(schemes=["bcrypt"], bcrypt__rounds=4)
+    yield
+    hashing.pwd_context = original
 
 
 @pytest.fixture()

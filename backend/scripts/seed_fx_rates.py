@@ -36,8 +36,10 @@ def main() -> None:
 
     try:
         rate = Decimal(args.rate)
-    except InvalidOperation:
-        raise SystemExit(f"--rate must be a number, got {args.rate!r}")
+    except InvalidOperation as exc:
+        raise SystemExit(
+            f"--rate must be a number, got {args.rate!r}"
+        ) from exc
     if rate <= 0:
         raise SystemExit("--rate must be positive")
 

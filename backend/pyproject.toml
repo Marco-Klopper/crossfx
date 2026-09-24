@@ -1,0 +1,51 @@
+# Tooling configuration for the CrossFX backend.
+#
+# This is not a package: the app is run from this directory (uvicorn
+# app.main:app), and pytest.ini's `pythonpath = .` is what makes `app`
+# importable. There is deliberately no [project] table, so nothing here
+# implies `pip install .` would work.
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+extend-exclude = ["migrations/versions", ".venv"]
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I import order, B bugbear, UP pyupgrade,
+# C4 comprehensions, SIM simplifications. Chosen to catch real mistakes
+# -- an unused import, a mutable default, an f-string with no
+# placeholders -- rather than to enforce a house style on code four
+# people wrote in parallel.
+select = ["E", "W", "F", "I", "B", "UP", "C4", "SIM"]
+ignore = [
+    # The codebase wraps prose comments at 72 characters but lets the
+    # occasional URL or long string run past 88. Nothing is gained by
+    # rewrapping those.
+    "E501",
+    # `db: Session = Depends(get_db)` is how FastAPI declares a
+    # dependency. B008 exists to catch mutable defaults, and flagging 59
+    # correct uses of the framework's core idiom would only teach people
+    # to ignore the linter.
+    "B008",
+    # datetime.now(timezone.utc) -> datetime.now(UTC). Correct, and
+    # purely cosmetic: it would rewrite 39 lines across code four people
+    # wrote, for no behavioural difference.
+    "UP017",
+    # (str, Enum) -> StrEnum. Not equivalent here: these enums are
+    # persisted by SQLAlchemy and compared against strings in several
+    # places, so the change is not one to make without testing what it
+    # does to the stored values.
+    "UP042",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Fixtures legitimately shadow their own names, and the tests import
+# fixtures they do not reference directly.
+"tests/*" = ["F811", "F401"]
+# conftest sets os.environ before the first app import on purpose; the
+# module-level imports that follow are not at the top of the file and
+# cannot be.
+"tests/conftest.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "worker", "scripts"]

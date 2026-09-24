@@ -1,11 +1,20 @@
 import { useEffect, useState } from 'react'
 
 import * as api from '../api'
-import { Alert, Badge, TxHash, money, token, rate, when } from '../ui.jsx'
+import {
+  Alert,
+  Badge,
+  TxHash,
+  amountIn,
+  money,
+  rate,
+  token,
+  when,
+} from '../ui.jsx'
 
 /**
- * The recipient's custodial wallet and cash-out (brief §4, "Custodial RLUSD
- * Wallet" and "Simulated Cash-Out"; spec §9.4, §10).
+ * The recipient's custodial wallet and cash-out (brief §4, "Custodial
+ * UCTUSD Wallet" and "Simulated Cash-Out"; spec §9.4, §10).
  *
  * The transaction table shows the six things the brief requires the wallet to
  * display: incoming transfers, outgoing/cash-out entries, status, date, amount
@@ -27,6 +36,7 @@ export default function Wallet() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
+  const [loaded, setLoaded] = useState(false)
 
   async function load() {
     try {
@@ -40,6 +50,8 @@ export default function Wallet() {
       setCashOuts(outs)
     } catch (err) {
       setError(err.detail || err.message)
+    } finally {
+      setLoaded(true)
     }
   }
 
@@ -56,6 +68,9 @@ export default function Wallet() {
       const result = await api.requestCashOut({
         uctusdAmount: amount,
         payoutCurrency: currency,
+        // Fresh per submission, so a retry of *this* request is deduped by
+        // the API while a genuine second payout is not.
+        idempotencyKey: crypto.randomUUID(),
       })
       setNotice(
         `Cash-out requested: ${token(result.uctusd_amount)} → ` +
@@ -79,11 +94,11 @@ export default function Wallet() {
         <div className="card">
           <h2>Available balance</h2>
           <p className="balance">
-            {balance ? Number(balance.uctusd_balance).toFixed(6) : '—'}
+            {balance ? amountIn(balance.uctusd_balance, 'UCTUSD') : '—'}
             <small>UCTUSD</small>
           </p>
           <p className="hint">
-            Held in the platform's pooled custody and recorded in the internal
+            Held in the platform&apos;s pooled custody and recorded in the internal
             ledger.
           </p>
 
@@ -93,7 +108,7 @@ export default function Wallet() {
                 <div className="breakdown-row" key={row.currency}>
                   <span className="label">{row.currency}</span>
                   <span className="value">
-                    {Number(row.amount).toFixed(row.currency === 'UCTUSD' ? 6 : 2)}
+                    {amountIn(row.amount, row.currency)}
                   </span>
                 </div>
               ))}
@@ -150,7 +165,9 @@ export default function Wallet() {
 
       <div className="card">
         <h2>Transaction history</h2>
-        {transactions.length === 0 ? (
+        {!loaded ? (
+          <p className="empty">Loading…</p>
+        ) : transactions.length === 0 ? (
           <p className="empty">No transactions yet.</p>
         ) : (
           <div className="table-scroll">
@@ -171,9 +188,7 @@ export default function Wallet() {
                     <td>{when(row.created_at)}</td>
                     <td>{row.direction}</td>
                     <td className="num">
-                      {Number(row.amount).toFixed(
-                        row.currency === 'UCTUSD' ? 6 : 2,
-                      )}
+                      {amountIn(row.amount, row.currency)}
                     </td>
                     <td>{row.currency}</td>
                     <td>
@@ -197,7 +212,9 @@ export default function Wallet() {
 
       <div className="card">
         <h2>Your cash-outs</h2>
-        {cashOuts.length === 0 ? (
+        {!loaded ? (
+          <p className="empty">Loading…</p>
+        ) : cashOuts.length === 0 ? (
           <p className="empty">No cash-outs requested.</p>
         ) : (
           <div className="table-scroll">
@@ -216,9 +233,9 @@ export default function Wallet() {
                 {cashOuts.map((row) => (
                   <tr key={row.id}>
                     <td>{when(row.requested_at)}</td>
-                    <td className="num">{Number(row.uctusd_amount).toFixed(6)}</td>
+                    <td className="num">{amountIn(row.uctusd_amount, 'UCTUSD')}</td>
                     <td className="num">
-                      {Number(row.cash_out_fee_uctusd).toFixed(6)}
+                      {amountIn(row.cash_out_fee_uctusd, 'UCTUSD')}
                     </td>
                     <td className="num">{rate(row.fx_rate_used)}</td>
                     <td className="num">

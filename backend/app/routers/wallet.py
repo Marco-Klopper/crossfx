@@ -7,8 +7,9 @@ multi-currency ledger, so everything here reads app.services.ledger
 rather than XRPL.
 """
 import uuid
+from decimal import InvalidOperation
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -65,6 +66,7 @@ def request_cash_out(
     payload: CashOutRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     """
     Converts held UCTUSD into a fiat balance (spec §10).
@@ -79,6 +81,11 @@ def request_cash_out(
     gating here would make a recipient unable to touch money that is
     already theirs. Spec §14 records that as a deliberate prototype
     simplification.
+
+    Send an `Idempotency-Key` header to make a retry safe. Replaying a
+    key this user has already used returns the original cash-out and
+    debits nothing further — without one, a double-clicked button opened
+    two payouts against the same balance.
     """
     try:
         rate = fx_rate_service.get_usd_zar_rate(db)
@@ -95,6 +102,7 @@ def request_cash_out(
             payload.uctusd_amount,
             payload.payout_currency,
             rate,
+            idempotency_key=idempotency_key,
         )
     except InsufficientFundsError as exc:
         db.rollback()
@@ -108,6 +116,16 @@ def request_cash_out(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except InvalidOperation as exc:
+        # Belt-and-braces. CashOutRequest now bounds uctusd_amount, so this
+        # should be unreachable — but an amount big enough to overflow
+        # Decimal.quantize() used to reach fee_service and surface as a 500
+        # on a money endpoint, and that must never be the failure mode.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"uctusd_amount is out of range: {exc}",
         ) from exc
 
     db.commit()

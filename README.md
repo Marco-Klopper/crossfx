@@ -59,27 +59,70 @@ crossfx/
 │   ├── tests/
 │   ├── requirements.txt
 │   └── .env.example
-├── frontend/                    # Web front end (framework TBD by team)
+├── frontend/                    # React 18 + Vite SPA (see frontend/README.md)
+├── .github/workflows/           # CI: pytest + ruff, eslint + vitest + build
 ├── docs/
-│   ├── technical-specification.md   # Skeleton matching the brief's required sections
+│   ├── technical-specification.md   # The brief's required sections, in full
 │   └── resources/                   # Course-provided brief + resource pack (PDFs)
-├── performance-testing/         # Load test scripts + results (locust/k6)
+├── performance-testing/         # Locust load tests + settlement latency probe
 └── .gitignore
 ```
 
 ## Getting Started (local dev)
 
+Two processes: the API, and the web app that talks to it.
+
+**1. Backend** — `http://127.0.0.1:8000`
+
 ```bash
 cd backend
 python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # fill in DB, XRPL, and encryption settings
+source .venv/bin/activate              # Windows: .venv\Scripts\activate
+pip install -r requirements.txt        # add -r requirements-dev.txt for lint + load tests
+cp .env.example .env                   # fill in DB, XRPL and encryption settings
+alembic upgrade head
 uvicorn app.main:app --reload
+```
+
+**2. Frontend** — `http://localhost:5173`
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The port matters: `vite.config.js` sets `strictPort`, and the backend's
+`CORS_ORIGINS` allows only 5173 and 3000.
+
+**3. An admin account**, for the KYC and payout approval screens — no API route can
+grant `is_admin`:
+
+```bash
+cd backend
+python -m scripts.create_admin --email admin@example.com --password adminpass123
+```
+
+**4. Settlement** (optional for a UI walkthrough, required to see a transfer land on
+chain) — Redis, then the worker in its own terminal:
+
+```bash
+cd backend
+python -m worker.settlement_worker
 ```
 
 Get free Testnet XRP from the [XRPL faucet](https://xrpl.org/resources/dev-tools/xrp-faucets)
 before testing settlement.
+
+### Checking it works
+
+```bash
+cd backend  && pytest -q && ruff check .          # 364 tests
+cd frontend && npm run lint && npm test && npm run build
+cd backend  && python -m scripts.walkthrough_remittance   # the whole journey, end to end
+```
+
+The same commands run in CI on every pull request.
 
 ## Course Resources
 

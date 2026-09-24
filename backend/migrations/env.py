@@ -1,9 +1,7 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
-
 from alembic import context
+from sqlalchemy import engine_from_config, pool
 
 # Import app.models (not just app.database) so every table is registered on
 # Base.metadata before autogenerate inspects it — a model module that's never

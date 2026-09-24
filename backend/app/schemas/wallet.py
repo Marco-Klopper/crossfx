@@ -7,10 +7,11 @@ transactions, transaction status, transaction date, and the XRP Ledger
 transaction hash.
 """
 import uuid
-from datetime import datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
+
+from app.schemas.common import UtcDatetime
 
 
 class LedgerBalanceRead(BaseModel):
@@ -41,4 +42,4 @@ class WalletTransactionRead(BaseModel):
     xrpl_tx_hash: str | None
     status: str
     failure_reason: str | None
-    created_at: datetime
+    created_at: UtcDatetime

@@ -1,0 +1,80 @@
+name: CI
+
+# Four people merged four tracks into main through pull requests with
+# nothing checking any of it. A PR that broke the settlement worker
+# merged exactly as easily as one that did not. This is the smallest
+# thing that changes that.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend — pytest + ruff
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches the local .venv. 3.13 is avoided deliberately: see the
+          # psycopg2-binary note in requirements.txt.
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        # No Postgres, Redis or XRPL service needed: the suite runs
+        # against in-memory SQLite and fakes every external collaborator
+        # (tests/conftest.py). The env vars below are the three settings
+        # app/config.py requires at import time; conftest sets its own,
+        # but alembic's env.py reads the real settings object.
+        env:
+          SECRET_KEY: ci-secret-not-for-production
+          DATABASE_URL: sqlite://
+          PRIVATE_KEY_ENCRYPTION_KEY: 3S8m9Zr7Qf2dK1wXyVbN4tPcJhLgE6uA0iO5sR2nT3k=
+          UCTUSD_ISSUER_ADDRESS: rTestIssuerAddressXXXXXXXXXXXXXXXX
+        run: pytest -q
+
+  frontend:
+    name: Frontend — eslint + vitest + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        # The build is a test in its own right here: before this branch,
+        # the app had never been installed or bundled in this repository
+        # at all.
+        run: npm run build

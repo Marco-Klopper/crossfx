@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import * as api from '../api'
-import { Alert, Badge, money, token, rate, when } from '../ui.jsx'
+import { Alert, Badge, amountIn, money, rate, when } from '../ui.jsx'
 
 /**
  * The administrator interface (brief §5, "administrator interface";
@@ -11,14 +11,16 @@ import { Alert, Badge, money, token, rate, when } from '../ui.jsx'
  * approving KYC, confirming that a sender's rand arrived, and releasing a
  * recipient's payout.
  */
-export default function Admin({ onKycReviewed }) {
+export default function Admin({ me, onKycReviewed }) {
   const [applications, setApplications] = useState([])
   const [cashOuts, setCashOuts] = useState([])
   const [remittanceId, setRemittanceId] = useState('')
 
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [warning, setWarning] = useState('')
   const [busy, setBusy] = useState(false)
+  const [loaded, setLoaded] = useState(false)
 
   async function load() {
     try {
@@ -30,6 +32,8 @@ export default function Admin({ onKycReviewed }) {
       setCashOuts(outs)
     } catch (err) {
       setError(err.detail || err.message)
+    } finally {
+      setLoaded(true)
     }
   }
 
@@ -41,13 +45,19 @@ export default function Admin({ onKycReviewed }) {
   async function act(work, successMessage) {
     setError('')
     setNotice('')
+    setWarning('')
     setBusy(true)
     try {
-      await work()
-      setNotice(successMessage)
+      const outcome = await work()
+      // A string back from `work` is a caveat, not a failure -- see
+      // confirmPayment.
+      if (typeof outcome === 'string') setWarning(outcome)
+      else setNotice(successMessage)
       await load()
+      return true
     } catch (err) {
       setError(err.detail || err.message)
+      return false
     } finally {
       setBusy(false)
     }
@@ -62,7 +72,12 @@ export default function Admin({ onKycReviewed }) {
       () =>
         approve ? api.approveKyc(row.id) : api.rejectKyc(row.id, reason),
       `${row.full_name}'s application ${approve ? 'approved' : 'rejected'}.`,
-    ).then(onKycReviewed)
+    ).then((ok) => {
+      // Only refresh the session when the review actually landed. act()
+      // swallows its own errors, so an unconditional .then() called
+      // onKycReviewed even after a 409 or a 404.
+      if (ok) onKycReviewed()
+    })
   }
 
   function reviewCashOut(row, approve) {
@@ -81,11 +96,21 @@ export default function Admin({ onKycReviewed }) {
 
   function confirmPayment(event) {
     event.preventDefault()
+    const id = remittanceId.trim()
+    if (!id) {
+      setError('Enter a remittance ID.')
+      return
+    }
     act(
       async () => {
-        const result = await api.confirmPayment(remittanceId.trim())
-        if (!result.queued) throw new Error(result.detail)
+        const result = await api.confirmPayment(id)
         setRemittanceId('')
+        // `queued: false` means the cash-in WAS confirmed and only the queue
+        // was unreachable; it settles once the queue recovers. This used to
+        // throw, painting the success case red -- which is exactly what
+        // invites an admin to take the payment again. Send.jsx has always
+        // rendered the same response as a warning; this now matches it.
+        return result.queued ? undefined : result.detail
       },
       'Payment confirmed and queued for settlement.',
     )
@@ -95,14 +120,27 @@ export default function Admin({ onKycReviewed }) {
     <>
       <Alert kind="error">{error}</Alert>
       <Alert kind="success">{notice}</Alert>
+      <Alert kind="warn">{warning}</Alert>
 
       <div className="card">
         <h2>KYC review queue</h2>
         <p className="hint">
-          Pending applications. Approving one sets the sender's limits to
-          R3,000 daily and R25,000 monthly.
+          Pending applications. Approving one lifts the sender to the verified
+          limits. {/*
+            Read from the profile rather than written into the copy: the
+            limits are configuration (VERIFIED_*_LIMIT), so hard-coding
+            "R3,000 daily" made this sentence a lie the moment anyone changed
+            the .env it came from.
+          */}
+          {me?.is_admin && me?.limits
+            ? ` Yours are ${money(me.limits.daily_limit_zar)} daily and ${money(
+                me.limits.monthly_limit_zar,
+              )} monthly.`
+            : ''}
         </p>
-        {applications.length === 0 ? (
+        {!loaded ? (
+          <p className="empty">Loading…</p>
+        ) : applications.length === 0 ? (
           <p className="empty">Nothing waiting for review.</p>
         ) : (
           <div className="table-scroll">
@@ -158,7 +196,9 @@ export default function Admin({ onKycReviewed }) {
           the recipient asked — approving credits the fiat, rejecting refunds
           the token.
         </p>
-        {cashOuts.length === 0 ? (
+        {!loaded ? (
+          <p className="empty">Loading…</p>
+        ) : cashOuts.length === 0 ? (
           <p className="empty">No payouts waiting.</p>
         ) : (
           <div className="table-scroll">
@@ -178,9 +218,9 @@ export default function Admin({ onKycReviewed }) {
                 {cashOuts.map((row) => (
                   <tr key={row.id}>
                     <td>{when(row.requested_at)}</td>
-                    <td className="num">{Number(row.uctusd_amount).toFixed(6)}</td>
+                    <td className="num">{amountIn(row.uctusd_amount, 'UCTUSD')}</td>
                     <td className="num">
-                      {Number(row.cash_out_fee_uctusd).toFixed(6)}
+                      {amountIn(row.cash_out_fee_uctusd, 'UCTUSD')}
                     </td>
                     <td className="num">{rate(row.fx_rate_used)}</td>
                     <td className="num">
@@ -218,7 +258,7 @@ export default function Admin({ onKycReviewed }) {
       <div className="card">
         <h2>Mock payment service</h2>
         <p className="hint">
-          Confirms a sender's ZAR cash-in on their behalf. This is also the
+          Confirms a sender&apos;s ZAR cash-in on their behalf. This is also the
           retry for a remittance whose settlement message never reached the
           queue — republishing is safe, because the worker claims each
           remittance exactly once.

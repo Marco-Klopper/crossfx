@@ -10,13 +10,14 @@ flow exists to decouple from.
 """
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.dependencies import require_kyc_approved
+from app.dependencies import get_current_user, require_kyc_approved
 from app.models.beneficiary import Beneficiary
 from app.models.remittance import Remittance, RemittanceStatus
 from app.models.user import User
@@ -104,6 +105,22 @@ def create_quote(
     now = datetime.now(timezone.utc)
     rate = _current_rate(db)
 
+    # Serialise this sender's concurrent quotes against each other.
+    #
+    # Two concurrent POSTs used to read the same running totals, both pass
+    # assert_within_limits, and both insert -- so a sender cleared a
+    # regulatory limit by firing N requests in parallel. Locking their own
+    # users row is the narrowest thing that serialises them, and it is the
+    # same with_for_update() idiom services/ledger.py uses on balance rows.
+    #
+    # On its own this is not enough, because with_for_update() is a no-op
+    # on SQLite: measured against the shipped configuration, ten parallel
+    # R1 000 quotes put R6 000 through an R3 000 limit. The insert is
+    # therefore re-verified below, which is what actually holds on both
+    # databases. The lock stays because on Postgres it makes the
+    # contended case block rather than roll back.
+    db.query(User).filter(User.id == current_user.id).with_for_update().first()
+
     try:
         usage = assert_within_limits(
             db, current_user, payload.zar_send_amount, now
@@ -150,6 +167,28 @@ def create_quote(
         quote_expires_at=now + timedelta(minutes=settings.quote_ttl_minutes),
     )
     db.add(remittance)
+    db.flush()
+
+    # Re-verify with this quote counted, before committing it.
+    #
+    # This is the half that works everywhere. The flush takes the write
+    # lock, so a competing request cannot reach its own re-check until
+    # this transaction ends -- and whichever transaction gets there second
+    # sees the first one's row in the total and rolls itself back. The
+    # earlier check stays because it produces the better error message
+    # (it names the headroom) and refuses the uncontended case without
+    # writing anything.
+    #
+    # The amount is zero because `usage` is now computed from a total that
+    # already includes this remittance.
+    try:
+        usage = assert_within_limits(db, current_user, Decimal("0"), now)
+    except LimitExceededError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+        ) from exc
+
     db.commit()
     db.refresh(remittance)
 
@@ -173,12 +212,10 @@ def create_quote(
         limits=LimitHeadroom(
             daily_limit_zar=usage.daily_limit,
             monthly_limit_zar=usage.monthly_limit,
-            daily_remaining_zar=max(
-                usage.daily_remaining - quote.zar_send_amount, 0
-            ),
-            monthly_remaining_zar=max(
-                usage.monthly_remaining - quote.zar_send_amount, 0
-            ),
+            # No subtraction: `usage` was recomputed after the insert, so
+            # this remittance is already counted in the totals behind it.
+            daily_remaining_zar=max(usage.daily_remaining, Decimal("0")),
+            monthly_remaining_zar=max(usage.monthly_remaining, Decimal("0")),
         ),
     )
 
@@ -254,9 +291,18 @@ def confirm_cash_in(
 @router.get("/", response_model=list[RemittanceRead])
 def list_remittances(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_kyc_approved),
+    current_user: User = Depends(get_current_user),
 ):
-    """The authenticated sender's transaction history, newest first."""
+    """
+    The authenticated sender's transaction history, newest first.
+
+    get_current_user, not require_kyc_approved. Sending needs approved
+    KYC; reading what you have already sent does not. Gating this meant a
+    sender whose KYC was later rejected lost access to their own records
+    — including the ability to poll a transfer that was mid-settlement —
+    and it was why the frontend's default tab fired a guaranteed 403 on
+    every mount for anyone not yet approved.
+    """
     return (
         db.query(Remittance)
         .filter(Remittance.sender_id == current_user.id)
@@ -269,10 +315,13 @@ def list_remittances(
 def get_remittance_status(
     remittance_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_kyc_approved),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Current status, plus the XRPL transaction hash once it has settled.
     This is the endpoint a client polls after confirming cash-in.
+
+    Ownership is still enforced by _owned_remittance; only the KYC gate
+    is gone, for the reason given on list_remittances above.
     """
     return _owned_remittance(db, remittance_id, current_user.id)
