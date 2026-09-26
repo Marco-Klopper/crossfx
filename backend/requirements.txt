@@ -1,21 +1,19 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-sqlalchemy==2.0.35
-alembic==1.13.2
-psycopg2-binary==2.9.10  # 2.9.9 has no Windows/py3.13 wheel and fails to build from source
-pydantic==2.9.2
-pydantic-settings==2.5.2
-python-dotenv==1.0.1
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+sqlalchemy==2.0.52
+alembic==1.19.1
+psycopg2-binary==2.9.12
+pydantic==2.13.4
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1  # pinned: passlib 1.7.4 chokes on bcrypt>=4.1's removed __about__ attr
-python-jose[cryptography]==3.3.0
-cryptography==43.0.1
-xrpl-py==3.0.0
-redis==5.0.8
-httpx==0.24.1  # capped: xrpl-py 3.0.0 (Track 2) requires httpx<0.25
-anyio<4  # httpx==0.24.1 pulls in httpcore==0.17.x, which needs anyio's pre-4.0 API
-         # (anyio>=4 crashes importing xrpl with "module 'anyio' has no attribute 'abc'")
-pytest==8.3.3
-pytest-cov==5.0.0
-email-validator==2.2.0
-python-multipart==0.0.9
+python-jose[cryptography]==3.5.0
+cryptography==50.0.0
+xrpl-py==5.1.0
+redis==8.1.0
+httpx==0.28.1
+pytest==9.1.1
+pytest-cov==7.1.0
+email-validator==2.3.0
+python-multipart==0.0.32

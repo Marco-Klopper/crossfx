@@ -110,3 +110,47 @@ def test_logout_is_honest_about_being_client_side(client):
     resp = client.post("/auth/logout")
     assert resp.status_code == 200
     assert "cannot revoke" in resp.json()["detail"]
+
+
+def test_patch_me_updates_name_and_email(client, auth_headers):
+    headers, _ = auth_headers
+    resp = client.patch(
+        "/auth/me",
+        json={"full_name": "New Name", "email": "new@example.com"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["full_name"] == "New Name"
+    assert resp.json()["email"] == "new@example.com"
+    assert client.get("/auth/me", headers=headers).json()["email"] == "new@example.com"
+
+
+def test_patch_me_partial_update_leaves_other_fields(client, auth_headers):
+    headers, _ = auth_headers
+    resp = client.patch("/auth/me", json={"full_name": "Only Name"}, headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["email"] == "sender@example.com"
+
+
+def test_patch_me_duplicate_email_conflicts(client, auth_headers, user_factory):
+    headers, _ = auth_headers
+    user_factory(email="taken@example.com")
+    resp = client.patch("/auth/me", json={"email": "taken@example.com"}, headers=headers)
+    assert resp.status_code == 409
+
+
+def test_patch_me_cannot_escalate_privileges(client, auth_headers):
+    headers, _ = auth_headers
+    resp = client.patch(
+        "/auth/me",
+        json={"is_admin": True, "kyc_status": "approved"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    body = client.get("/auth/me", headers=headers).json()
+    assert body["is_admin"] is False
+    assert body["kyc_status"] == "not_started"
+
+
+def test_patch_me_requires_auth(client):
+    assert client.patch("/auth/me", json={"full_name": "x"}).status_code == 401

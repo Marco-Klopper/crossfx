@@ -15,6 +15,7 @@ from app.models.user import User
 from app.schemas.token import TokenResponse
 from app.schemas.user import (
     MeResponse,
+    ProfileUpdate,
     TransactionLimits,
     UserLogin,
     UserRead,
@@ -137,6 +138,10 @@ def logout():
 
 @router.get("/me", response_model=MeResponse)
 def get_profile(current_user: User = Depends(get_current_user)):
+    return _me_response(current_user)
+
+
+def _me_response(current_user: User) -> MeResponse:
     # Delegated rather than branched on here: limits_service.limits_for
     # is what the quote endpoint enforces, and a profile screen that
     # promised different numbers from the ones a send is checked against
@@ -153,3 +158,30 @@ def get_profile(current_user: User = Depends(get_current_user)):
         is_admin=current_user.is_admin,
         limits=limits,
     )
+
+
+@router.patch("/me", response_model=MeResponse)
+def update_profile(
+    payload: ProfileUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Basic profile management (brief §4): name and email. KYC status, admin
+    rights and the password are deliberately not editable here - KYC status is
+    an admin decision and is_admin has no API route at all.
+    """
+    if payload.full_name is not None:
+        current_user.full_name = payload.full_name
+    if payload.email is not None:
+        current_user.email = payload.email
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already registered",
+        ) from None
+    db.refresh(current_user)
+    return _me_response(current_user)

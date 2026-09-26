@@ -215,6 +215,14 @@ export function getMe() {
   return request('/auth/me')
 }
 
+/** Basic profile management: name and email (PATCH /auth/me). */
+export function updateProfile({ fullName, email }) {
+  return request('/auth/me', {
+    method: 'PATCH',
+    body: { full_name: fullName, email },
+  })
+}
+
 // -- KYC (backend/app/routers/kyc.py) --------------------------------------
 
 /** The eight fields the brief's mock-KYC section requires. */

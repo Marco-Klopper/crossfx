@@ -164,6 +164,7 @@ python -m scripts.walkthrough
 | POST | `/auth/token` | — | Swagger-only OAuth2 form shim over the same check as `/login` |
 | POST | `/auth/logout` | — | 200; stateless JWTs, nothing to revoke server-side |
 | GET | `/auth/me` | user | Profile + `kyc_status` + limits (no wallet balance — that's Track 2) |
+| PATCH | `/auth/me` | user | Update name and/or email |
 | POST | `/kyc/apply` | user | 201, 409 if a pending/approved application already exists, 422 if under 18 |
 | GET | `/kyc/status` | user | Current status + latest application |
 | POST | `/beneficiaries/` | user | 201, 409 on duplicate `(sender, contact)`, 422 on unsupported currency |
