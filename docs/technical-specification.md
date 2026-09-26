@@ -3,8 +3,9 @@
 *ECO5040W — Financial Software Engineering, UCT — Group 4*
 *Ndumiso Zondi (ZNDNDU007) · Marco Klopper (KLPMAR012) · Muki Mdluli (MDLMUK001) · Rafaela Stevenson (STVRAF001)*
 
-> Target length: ~10–15 pages. Fill in each section below as the design solidifies.
-> Due alongside the check-in on 18 September.
+**Repository:** https://github.com/Marco-Klopper/crossfx
+
+**Performance testing results:** submitted as a separate, clearly marked document, *CrossFX Performance Testing Results* (source: `performance-testing/README.md` in the repository).
 
 ## 1. Business Problem
 
@@ -111,7 +112,7 @@ implemented. `FR-n` numbering is this document's own.
 | | Requirement | Implementation |
 |---|---|---|
 | FR-1 | Register, log in, log out | `routers/auth.py`; JWT, 60-minute expiry |
-| FR-2 | Manage basic profile information | `GET /auth/me` |
+| FR-2 | Manage basic profile information | `GET /auth/me`, `PATCH /auth/me` (name, email) |
 | FR-3 | View KYC status | `GET /auth/me`, `GET /kyc/status` |
 | FR-4 | View transaction limits | `GET /auth/me` returns the applicable pair (§6) |
 | FR-5 | View wallet balance and transaction history | `GET /wallet/balance`, `GET /wallet/transactions` |
@@ -966,6 +967,7 @@ means the route is gated on `require_kyc_approved`.*
 | POST | `/auth/logout` | — | Client-side token discard (stateless JWTs, nothing to revoke) |
 | GET | `/health` | — | Liveness probe; returns `{"status": "ok"}` |
 | GET | `/auth/me` | user | Profile, `is_admin`, KYC status, applicable transaction limits |
+| PATCH | `/auth/me` | user | Update name and/or email (409 if the email is taken); KYC status and `is_admin` are not editable |
 | POST | `/kyc/apply` | user | Submit a mock KYC application |
 | GET | `/kyc/status` | user | Current KYC status + latest application |
 | POST | `/beneficiaries/` | user | Register a recipient |
