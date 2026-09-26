@@ -143,8 +143,8 @@ cannot change what gets settled. Publishing the same message twice is safe (§9.
 
 ## Crediting and debiting a balance (Track 3's cash-out)
 
-*Now wired up: `cashin_cashout_service.request_cash_out` / `simulate_cash_out` /
-`fail_cash_out`, behind `POST /wallet/cash-out` and the admin review routes.*
+*Now wired up: `cashin_cashout_service.request_cash_out` / `approve_cash_out` /
+`queue_cash_out_burn` / `complete_cash_out` / `fail_cash_out`, behind `POST /wallet/cash-out` and the admin review routes.*
 
 Every balance change must go through `app/services/ledger.py` — it writes the
 balance and its audit entry together or not at all.

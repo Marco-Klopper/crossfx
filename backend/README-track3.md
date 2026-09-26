@@ -43,7 +43,8 @@ POST /remittances/quote                     -> a QUOTED remittance, priced and h
 POST /remittances/{id}/confirm-cash-in      -> CASH_IN_CONFIRMED, then QUEUED
    (Track 2's worker settles it)            -> SETTLED, recipient credited in UCTUSD
 POST /wallet/cash-out                       -> UCTUSD debited, cash-out REQUESTED
-POST /admin/cash-outs/{id}/approve          -> fiat credited, cash-out COMPLETED
+POST /admin/cash-outs/{id}/approve          -> APPROVED, burn queued; the worker burns the net UCTUSD
+                                               to the issuer, then credits fiat -> COMPLETED
 ```
 
 Run it against a live server and watch every request and response:

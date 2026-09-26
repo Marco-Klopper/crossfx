@@ -279,25 +279,38 @@ def approve_cash_out(
     _admin: User = Depends(require_admin),
 ):
     """
-    Releases a requested cash-out: the simulated payout rail runs and the
-    fiat leg is credited to the recipient's ledger balance (spec §10).
+    Releases a requested cash-out to the worker (spec §10).
 
-    The UCTUSD was already debited when the cash-out was requested, so
-    approving moves no settlement token — it only completes the other
-    half of a swap that is already half-done.
+    Approving queues the burn: the worker pays the net UCTUSD from the
+    payout pool back to the issuer (standing in for the hand-over to an
+    exchange) and only then credits the fiat leg, so the cash-out is
+    APPROVED here and COMPLETED once the worker has finished. The UCTUSD
+    was already debited when it was requested.
+
+    Calling this again on an APPROVED cash-out re-publishes the message,
+    which is the retry when the queue was down. The worker claims with a
+    compare-and-swap, so a duplicate burns nothing.
     """
     cash_out = _get_cash_out(db, cash_out_id)
-    # Releasing money had no audit trail at all, though KYC has recorded
-    # its reviewer since Track 1.
-    cash_out.reviewed_by_admin_id = _admin.id
     try:
-        cashin_cashout_service.simulate_cash_out(db, cash_out)
+        if cash_out.status != CashOutStatus.APPROVED:
+            cash_out.reviewed_by_admin_id = _admin.id
+            cashin_cashout_service.approve_cash_out(db, cash_out)
+            db.commit()
+        cashin_cashout_service.queue_cash_out_burn(cash_out)
     except cashin_cashout_service.CashOutStateError as exc:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
-    db.commit()
+    except cashin_cashout_service.SettlementPublishError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                f"Cash-out is approved but the queue is unreachable "
+                f"({exc}). Approve it again once the queue recovers."
+            ),
+        ) from exc
     db.refresh(cash_out)
     return cash_out
 

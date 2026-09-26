@@ -58,8 +58,15 @@ class SettlementQueue:
         if self._client is None:
             # decode_responses keeps stream fields as str rather than
             # bytes, so callers never have to track which they hold.
+            #
+            # socket_timeout has to outlast the blocking read. redis-py 8
+            # defaults it to 5s, the same as settlement_block_ms, so every
+            # idle XREADGROUP raced its own timeout and the worker logged
+            # a TimeoutError (and slept its error backoff) every cycle.
             self._client = redis.Redis.from_url(
-                settings.redis_url, decode_responses=True
+                settings.redis_url,
+                decode_responses=True,
+                socket_timeout=self.block_ms / 1000 + 10,
             )
         return self._client
 
@@ -98,6 +105,22 @@ class SettlementQueue:
             {
                 "idempotency_key": str(idempotency_key),
                 "remittance_id": str(remittance_id),
+            },
+        )
+
+    def publish_cash_out(self, cash_out_id) -> str:
+        """
+        Adds a cash-out burn message. Same stream and consumer group as
+        settlement; `kind` tells the worker which handler to use, and a
+        message without it is a remittance settlement. As there, the
+        message carries only an identifier.
+        """
+        return self.client.xadd(
+            self.stream,
+            {
+                "kind": "cash_out",
+                "idempotency_key": f"cash_out:{cash_out_id}",
+                "cash_out_id": str(cash_out_id),
             },
         )
 

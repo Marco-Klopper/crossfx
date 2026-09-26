@@ -178,3 +178,19 @@ class TestReclaimStale:
         )
 
         assert queue.reclaim_stale("worker-2", 60_000) == []
+
+
+class TestPublishCashOut:
+    def test_the_message_is_tagged_and_carries_only_the_id(self, queue, client):
+        cash_out_id = uuid.uuid4()
+
+        queue.publish_cash_out(cash_out_id)
+
+        client.xadd.assert_called_once_with(
+            STREAM,
+            {
+                "kind": "cash_out",
+                "idempotency_key": f"cash_out:{cash_out_id}",
+                "cash_out_id": str(cash_out_id),
+            },
+        )

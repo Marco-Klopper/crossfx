@@ -189,6 +189,20 @@ class XRPLService:
             self._seed_for(source_pool), destination_address, amount
         )
 
+    def burn(self, source_pool, amount: str) -> str:
+        """
+        Redeems tokens by paying them back to the issuer, which is how
+        a withdrawal is simulated: sending UCTUSD to the issuing address
+        stands in for handing it to an exchange. Issued tokens paid to
+        their issuer leave circulation.
+
+        Raises XRPLTransactionError if the transaction does not reach
+        tesSUCCESS, which the worker turns into a failed cash-out.
+        """
+        return self.send_payment(
+            self._seed_for(source_pool), self.issuer, amount
+        )
+
     # -- reads ----------------------------------------------------------
 
     def transaction_status(self, tx_hash: str) -> str:

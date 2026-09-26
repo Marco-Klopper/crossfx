@@ -306,6 +306,7 @@ class FakeSettlementQueue:
 
     def __init__(self, fail_with: Exception | None = None) -> None:
         self.published: list[tuple[str, str]] = []
+        self.cash_outs_published: list[str] = []
         self.fail_with = fail_with
 
     def publish(self, idempotency_key, remittance_id) -> str:
@@ -313,6 +314,12 @@ class FakeSettlementQueue:
             raise self.fail_with
         self.published.append((str(idempotency_key), str(remittance_id)))
         return f"entry-{len(self.published)}"
+
+    def publish_cash_out(self, cash_out_id) -> str:
+        if self.fail_with is not None:
+            raise self.fail_with
+        self.cash_outs_published.append(str(cash_out_id))
+        return f"cash-out-entry-{len(self.cash_outs_published)}"
 
 
 @pytest.fixture()

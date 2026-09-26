@@ -824,9 +824,10 @@ above has occurred.
 *Written by Track 3 (FX, Fees & Remittance Flow).*
 
 The recipient's half of the journey: turning held UCTUSD into fiat. Like cash-in,
-the payout rail is simulated — `simulate_cash_out` is where a real bank or agent
-instruction would go — but the ledger movements, the state machine and the refund
-path are real.
+the fiat payout is simulated, but the withdrawal itself is real on-chain: approving
+queues a burn message, and the worker pays the net UCTUSD from the payout pool back
+to the issuer (standing in for the hand-over to an exchange) before crediting the
+fiat. The ledger movements, the state machine and the refund path are real.
 
 A cash-out is its own record, `cash_outs`, and it belongs to a **user, not a
 remittance**. By the time value is cashed out it has been pooled into a single
@@ -838,7 +839,7 @@ the ledger cannot answer and does not need to.
 | Step | Endpoint | Effect |
 |---|---|---|
 | Request | `POST /wallet/cash-out` | Prices the payout, **debits the UCTUSD**, creates a `requested` row |
-| Approve | `POST /admin/cash-outs/{id}/approve` | Runs the simulated rail, **credits the fiat**, row → `completed` |
+| Approve | `POST /admin/cash-outs/{id}/approve` | Row → `approved`, burn queued; the worker burns the net UCTUSD to the issuer, then **credits the fiat**, row → `completed` (or `failed` with a refund if the burn is rejected) |
 | Reject | `POST /admin/cash-outs/{id}/reject` | Refunds the UCTUSD, row → `failed` with a reason |
 
 Statuses are `requested → approved → completed`, or `requested → failed`. The
@@ -1264,10 +1265,10 @@ make it lawful to operate.
   stay in the send pool as rand that was never converted; the cash-out fee is UCTUSD
   debited from a recipient and credited to nobody. The money is correct at every
   step, but there is no platform revenue ledger to reconcile it against (§4.3).
-- **Payouts settle instantly because nothing actually pays out.** `simulate_cash_out`
-  approves and completes in one call (§10.1). A real payout partner would introduce a
-  genuine `approved`-but-not-yet-paid window, and with it settlement risk this
-  prototype does not model.
+- **The fiat leg is simulated.** The UCTUSD burn is a real XRPL transaction, done by
+  the worker (`processing` while it is in flight), but the fiat credit that follows is
+  instant. A real payout partner would add a genuine paid-out window, and with it
+  settlement risk this prototype does not model.
 - **One corridor, one currency pair.** Everything assumes ZAR in and USD/ZAR
   pricing (§5). A second corridor would need a rate per pair and a
   `currency_pair`-aware `fx_rates` lookup — which the table is already shaped for,

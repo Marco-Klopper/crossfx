@@ -114,6 +114,7 @@ const TONE = {
   rejected: 'bad',
   // cash-out + ledger entries
   requested: 'info',
+  processing: 'pending',
   completed: 'good',
   success: 'good',
 }

@@ -164,6 +164,7 @@ class CashOutRead(BaseModel):
     fx_rate_used: Decimal
 
     failure_reason: str | None
+    xrpl_tx_hash: str | None
 
     requested_at: UtcDatetime
     approved_at: UtcDatetime | None

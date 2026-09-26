@@ -15,6 +15,10 @@ from app.config import settings
 from app.models.remittance import CashOut, CashOutStatus
 from app.schemas.remittance import CashOutRead
 from app.services.ledger import Ledger
+from app.services.settlement_queue import SettlementQueue
+from app.services.xrpl_service import XRPLService, XRPLTransactionError
+from unittest.mock import create_autospec
+from worker.settlement_worker import SettlementOutcome, SettlementWorker
 
 
 @pytest.fixture(autouse=True)
@@ -23,6 +27,44 @@ def stable_rate(monkeypatch):
     monkeypatch.setattr(settings, "fx_mock_base_rate", 18.50)
     monkeypatch.setattr(settings, "fx_mock_volatility_bps", 0)
     monkeypatch.setattr(settings, "cashout_fee_bps", 100)
+
+
+@pytest.fixture(autouse=True)
+def queue(fake_queue):
+    """Approving publishes a burn message; no Redis is needed to test it."""
+    return fake_queue
+
+
+@pytest.fixture()
+def xrpl():
+    service = create_autospec(XRPLService, instance=True)
+    service.burn.return_value = "BURNTX123"
+    return service
+
+
+@pytest.fixture()
+def worker(xrpl, pool_wallets):
+    return SettlementWorker(
+        queue=create_autospec(SettlementQueue, instance=True),
+        xrpl=xrpl,
+        consumer="test-worker",
+    )
+
+
+def run_burn(worker, db_session, cash_out_id):
+    """Delivers the burn message the approval published."""
+    return worker.burn_cash_out(
+        {"kind": "cash_out", "cash_out_id": str(cash_out_id)}, db_session
+    )
+
+
+def approve_and_burn(client, admin, cash_out_id, worker, db_session):
+    response = client.post(
+        f"/admin/cash-outs/{cash_out_id}/approve", headers=admin
+    )
+    assert response.status_code == 200
+    run_burn(worker, db_session, cash_out_id)
+    return response
 
 
 @pytest.fixture()
@@ -186,8 +228,8 @@ class TestApproval:
         ).json()
         return body, headers, user
 
-    def test_credits_the_fiat_leg(
-        self, client, requested, admin_headers, db_session
+    def test_approving_queues_the_burn_and_pays_nothing_yet(
+        self, client, requested, admin_headers, db_session, queue
     ):
         body, _, user = requested
         admin, _ = admin_headers
@@ -198,16 +240,124 @@ class TestApproval:
 
         assert response.status_code == 200
         approved = response.json()
-        assert approved["status"] == "completed"
+        assert approved["status"] == "approved"
         assert approved["approved_at"] is not None
-        assert approved["completed_at"] is not None
+        assert approved["completed_at"] is None
+        assert queue.cash_outs_published == [body["id"]]
+
+        db_session.expire_all()
+        assert _balance(db_session, user, "USD") == Decimal("0")
+
+    def test_the_worker_burns_then_credits_the_fiat_leg(
+        self, client, requested, admin_headers, db_session, worker, xrpl,
+        pool_wallets,
+    ):
+        body, headers, user = requested
+        admin, _ = admin_headers
+        _send_pool, payout_pool = pool_wallets
+        client.post(f"/admin/cash-outs/{body['id']}/approve", headers=admin)
+
+        outcome = run_burn(worker, db_session, body["id"])
+
+        assert outcome == SettlementOutcome.SETTLED
+        # The NET amount is burned, from the payout pool; the fee stays.
+        xrpl.burn.assert_called_once()
+        pool_arg, amount_arg = xrpl.burn.call_args.args
+        assert pool_arg.id == payout_pool.id
+        assert Decimal(amount_arg) == Decimal("49.500000")
+
+        done = client.get(
+            f"/wallet/cash-outs/{body['id']}", headers=headers
+        ).json()
+        assert done["status"] == "completed"
+        assert done["xrpl_tx_hash"] == "BURNTX123"
+        assert done["completed_at"] is not None
 
         db_session.expire_all()
         assert _balance(db_session, user, "USD") == Decimal("49.500000")
         assert _balance(db_session, user, "UCTUSD") == Decimal("50.000000")
 
+    def test_a_redelivered_message_burns_only_once(
+        self, client, requested, admin_headers, db_session, worker, xrpl
+    ):
+        body, _, user = requested
+        admin, _ = admin_headers
+        client.post(f"/admin/cash-outs/{body['id']}/approve", headers=admin)
+
+        first = run_burn(worker, db_session, body["id"])
+        second = run_burn(worker, db_session, body["id"])
+
+        assert first == SettlementOutcome.SETTLED
+        assert second == SettlementOutcome.SKIPPED
+        assert xrpl.burn.call_count == 1
+        db_session.expire_all()
+        assert _balance(db_session, user, "USD") == Decimal("49.500000")
+
+    def test_a_rejected_burn_refunds_the_token_and_pays_no_fiat(
+        self, client, requested, admin_headers, db_session, worker, xrpl
+    ):
+        body, headers, user = requested
+        admin, _ = admin_headers
+        xrpl.burn.side_effect = XRPLTransactionError(
+            "XRPL transaction failed: tecPATH_DRY", result_code="tecPATH_DRY"
+        )
+        client.post(f"/admin/cash-outs/{body['id']}/approve", headers=admin)
+
+        outcome = run_burn(worker, db_session, body["id"])
+
+        assert outcome == SettlementOutcome.FAILED
+        failed = client.get(
+            f"/wallet/cash-outs/{body['id']}", headers=headers
+        ).json()
+        assert failed["status"] == "failed"
+        assert "tecPATH_DRY" in failed["failure_reason"]
+        assert failed["xrpl_tx_hash"] is None
+        db_session.expire_all()
+        assert _balance(db_session, user, "UCTUSD") == Decimal("100.000000")
+        assert _balance(db_session, user, "USD") == Decimal("0")
+
+    def test_a_missing_payout_pool_fails_the_cash_out_and_refunds(
+        self, client, requested, admin_headers, db_session, xrpl
+    ):
+        """No pool_wallets fixture here: the payout pool row is absent."""
+        body, _, user = requested
+        admin, _ = admin_headers
+        bare_worker = SettlementWorker(
+            queue=create_autospec(SettlementQueue, instance=True),
+            xrpl=xrpl,
+            consumer="t",
+        )
+        client.post(f"/admin/cash-outs/{body['id']}/approve", headers=admin)
+
+        outcome = run_burn(bare_worker, db_session, body["id"])
+
+        assert outcome == SettlementOutcome.FAILED
+        xrpl.burn.assert_not_called()
+        db_session.expire_all()
+        assert _balance(db_session, user, "UCTUSD") == Decimal("100.000000")
+
+    def test_approving_again_republishes_when_the_queue_was_down(
+        self, client, requested, admin_headers, queue
+    ):
+        body, _, _ = requested
+        admin, _ = admin_headers
+        queue.fail_with = ConnectionError("Connection refused")
+
+        down = client.post(
+            f"/admin/cash-outs/{body['id']}/approve", headers=admin
+        )
+        assert down.status_code == 503
+
+        queue.fail_with = None
+        retry = client.post(
+            f"/admin/cash-outs/{body['id']}/approve", headers=admin
+        )
+        assert retry.status_code == 200
+        assert retry.json()["status"] == "approved"
+        assert queue.cash_outs_published == [body["id"]]
+
     def test_the_fee_stays_with_the_platform(
-        self, client, requested, admin_headers, db_session
+        self, client, requested, admin_headers, db_session, worker
     ):
         """
         50 UCTUSD left the recipient, 49.50 came back as USD. The 0.50
@@ -216,7 +366,7 @@ class TestApproval:
         """
         body, _, user = requested
         admin, _ = admin_headers
-        client.post(f"/admin/cash-outs/{body['id']}/approve", headers=admin)
+        approve_and_burn(client, admin, body["id"], worker, db_session)
 
         db_session.expire_all()
         assert (
@@ -227,23 +377,23 @@ class TestApproval:
         )
 
     def test_both_legs_appear_in_the_wallet_history(
-        self, client, requested, admin_headers
+        self, client, requested, admin_headers, worker, db_session
     ):
         body, headers, _ = requested
         admin, _ = admin_headers
-        client.post(f"/admin/cash-outs/{body['id']}/approve", headers=admin)
+        approve_and_burn(client, admin, body["id"], worker, db_session)
 
         history = client.get("/wallet/transactions", headers=headers).json()
         directions = {(t["direction"], t["currency"]) for t in history}
         assert ("outgoing", "UCTUSD") in directions
         assert ("incoming", "USD") in directions
 
-    def test_cannot_be_approved_twice(
-        self, client, requested, admin_headers, db_session
+    def test_cannot_be_approved_once_completed(
+        self, client, requested, admin_headers, db_session, worker
     ):
         body, _, user = requested
         admin, _ = admin_headers
-        client.post(f"/admin/cash-outs/{body['id']}/approve", headers=admin)
+        approve_and_burn(client, admin, body["id"], worker, db_session)
 
         second = client.post(
             f"/admin/cash-outs/{body['id']}/approve", headers=admin
@@ -318,11 +468,11 @@ class TestRejection:
         ]
 
     def test_cannot_reject_a_completed_cash_out(
-        self, client, requested, admin_headers
+        self, client, requested, admin_headers, worker, db_session
     ):
         body, _, _ = requested
         admin, _ = admin_headers
-        client.post(f"/admin/cash-outs/{body['id']}/approve", headers=admin)
+        approve_and_burn(client, admin, body["id"], worker, db_session)
 
         response = client.post(
             f"/admin/cash-outs/{body['id']}/reject", headers=admin
@@ -375,7 +525,7 @@ class TestListing:
         )
 
     def test_the_admin_queue_can_be_filtered_by_status(
-        self, client, funded_recipient, admin_headers
+        self, client, funded_recipient, admin_headers, worker, db_session
     ):
         headers, _ = funded_recipient
         admin, _ = admin_headers
@@ -389,7 +539,7 @@ class TestListing:
             json={"uctusd_amount": "10", "payout_currency": "USD"},
             headers=headers,
         )
-        client.post(f"/admin/cash-outs/{first['id']}/approve", headers=admin)
+        approve_and_burn(client, admin, first["id"], worker, db_session)
 
         pending = client.get(
             "/admin/cash-outs?status=requested", headers=admin
