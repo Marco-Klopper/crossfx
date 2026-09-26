@@ -275,3 +275,44 @@ class TestIssuedBalance:
     def test_zero_when_no_trust_line_exists_yet(self, xrpl, node):
         node.request.return_value = _lines_response([])
         assert xrpl.issued_balance("rPool") == Decimal("0")
+
+
+class TestBurn:
+    @staticmethod
+    def _pool():
+        from app.security.encryption import encrypt_seed
+
+        return MagicMock(
+            xrpl_address="rPayoutPool",
+            xrpl_encrypted_seed=encrypt_seed("sEdPayoutPoolSeed"),
+        )
+
+    def test_burn_pays_the_issuer_from_the_pool(self, xrpl):
+        pool = self._pool()
+
+        with patch.object(
+            module.Wallet, "from_seed", return_value=_signing_wallet()
+        ) as mock_from_seed, patch.object(
+            module, "submit_and_wait", return_value=_tx_response("BURNHASH")
+        ) as mock_submit:
+            tx_hash = xrpl.burn(pool, "49.5")
+
+        assert tx_hash == "BURNHASH"
+        mock_from_seed.assert_called_once_with("sEdPayoutPoolSeed")
+        submitted = mock_submit.call_args[0][0]
+        assert submitted.destination == xrpl.issuer
+        assert submitted.amount.issuer == xrpl.issuer
+        assert submitted.amount.value == "49.5"
+
+    def test_a_rejected_burn_raises(self, xrpl):
+        pool = self._pool()
+        with patch.object(
+            module.Wallet, "from_seed", return_value=_signing_wallet()
+        ), patch.object(
+            module,
+            "submit_and_wait",
+            side_effect=XRPLReliableSubmissionException(
+                "Transaction failed: tecUNFUNDED_PAYMENT"
+            ),
+        ), pytest.raises(XRPLTransactionError):
+            xrpl.burn(pool, "49.5")

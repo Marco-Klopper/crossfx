@@ -59,6 +59,18 @@ export default function Wallet() {
     load()
   }, [])
 
+  // Approving a cash-out queues an on-chain burn, so it is APPROVED and then
+  // PROCESSING for a while before the worker completes it. Poll only while
+  // one is in flight, so an idle wallet makes no background requests.
+  const inFlight = cashOuts.some((row) =>
+    ['requested', 'approved', 'processing'].includes(row.status),
+  )
+  useEffect(() => {
+    if (!inFlight) return undefined
+    const timer = setInterval(load, 3000)
+    return () => clearInterval(timer)
+  }, [inFlight])
+
   async function submit(event) {
     event.preventDefault()
     setError('')
@@ -192,6 +204,9 @@ export default function Wallet() {
                     </td>
                     <td>{row.currency}</td>
                     <td>
+                      <TxHash hash={row.xrpl_tx_hash} />
+                    </td>
+                    <td>
                       <Badge status={row.status} />
                       {row.failure_reason && (
                         <div className="hint" style={{ margin: 0 }}>
@@ -226,6 +241,7 @@ export default function Wallet() {
                   <th className="num">Fee</th>
                   <th className="num">Rate</th>
                   <th className="num">Payout</th>
+                  <th>Burn tx</th>
                   <th>Status</th>
                 </tr>
               </thead>

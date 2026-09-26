@@ -41,6 +41,13 @@ class UserLogin(BaseModel):
     password: str
 
 
+class ProfileUpdate(BaseModel):
+    """PATCH /auth/me. Only fields the user may change themselves; omitted fields are left alone."""
+
+    email: EmailStr | None = None
+    full_name: str | None = Field(default=None, min_length=1, max_length=200)
+
+
 class UserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

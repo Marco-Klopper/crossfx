@@ -403,28 +403,67 @@ def request_cash_out(
     return cash_out
 
 
-def simulate_cash_out(
+def approve_cash_out(
     db: Session, cash_out: CashOut, now: datetime | None = None
-) -> CashOutStatus:
+) -> CashOut:
     """
-    Progresses a requested cash-out through approved to completed, and
-    credits the fiat leg.
+    Releases a requested cash-out to the worker: REQUESTED -> APPROVED.
 
-    Both steps happen in one call because the simulated payout rail is
-    instant: there is no window in which "approved but not yet paid" is a
-    state anyone could observe. The APPROVED timestamp is still recorded,
-    so swapping in a real rail means returning after the approval instead
-    of falling through to the credit — not restructuring this.
+    Nothing is paid here. The burn and the fiat credit both happen in the
+    worker, in that order, so the recipient is never credited fiat for a
+    burn that did not land. Call queue_cash_out_burn after this commits,
+    for the same reason queue_for_settlement follows the cash-in commit.
     """
     if cash_out.status != CashOutStatus.REQUESTED:
         raise CashOutStateError(
             f"Cash-out is already {cash_out.status.value}"
         )
-
-    moment = now or _utcnow()
     cash_out.status = CashOutStatus.APPROVED
-    cash_out.approved_at = moment
+    cash_out.approved_at = now or _utcnow()
+    db.flush()
+    return cash_out
 
+
+def queue_cash_out_burn(
+    cash_out: CashOut, queue: SettlementQueue | None = None
+) -> str:
+    """
+    Publishes the burn message for an APPROVED cash-out. Safe to call
+    again if the queue was down: the worker claims the cash-out with a
+    compare-and-swap, so a duplicate message burns nothing.
+    """
+    if cash_out.status != CashOutStatus.APPROVED:
+        raise CashOutStateError(
+            f"Cash-out is {cash_out.status.value}; only an approved "
+            f"cash-out can be queued for its burn"
+        )
+    try:
+        entry_id = (queue or SettlementQueue()).publish_cash_out(cash_out.id)
+    except Exception as exc:
+        logger.exception(
+            "Could not publish the burn for cash-out %s — left APPROVED "
+            "for retry",
+            cash_out.id,
+        )
+        raise SettlementPublishError(str(exc)) from exc
+    logger.info(
+        "Queued cash-out %s for its burn (entry %s)", cash_out.id, entry_id
+    )
+    return entry_id
+
+
+def complete_cash_out(
+    db: Session,
+    cash_out: CashOut,
+    tx_hash: str,
+    now: datetime | None = None,
+) -> CashOut:
+    """
+    Credits the fiat leg and marks the cash-out COMPLETED, once the burn
+    has landed on-chain. The simulated payout rail is instant, so the
+    credit is the whole of the fiat side (spec §10).
+    """
+    moment = now or _utcnow()
     ledger = Ledger(db)
     user = db.get(User, cash_out.user_id)
     credit = ledger.credit(
@@ -432,13 +471,13 @@ def simulate_cash_out(
         cash_out.payout_currency,
         Decimal(cash_out.payout_amount),
     )
-
     cash_out.credit_transaction_id = credit.id
+    cash_out.xrpl_tx_hash = tx_hash
     cash_out.status = CashOutStatus.COMPLETED
     cash_out.completed_at = moment
     db.flush()
-    logger.info("Cash-out %s completed", cash_out.id)
-    return cash_out.status
+    logger.info("Cash-out %s completed (burn %s)", cash_out.id, tx_hash)
+    return cash_out
 
 
 def fail_cash_out(
@@ -446,18 +485,27 @@ def fail_cash_out(
     cash_out: CashOut,
     reason: str,
     now: datetime | None = None,
+    *,
+    from_states: tuple[CashOutStatus, ...] = (
+        CashOutStatus.REQUESTED,
+        CashOutStatus.APPROVED,
+    ),
 ) -> CashOut:
     """
-    Rejects a requested cash-out and refunds the reserved UCTUSD.
+    Fails a cash-out and refunds the reserved UCTUSD.
+
+    An admin can reject a REQUESTED cash-out, or an APPROVED one whose
+    message never reached the worker (the worker then skips it, as it is
+    no longer APPROVED). The worker passes (PROCESSING,) for a burn that
+    the ledger rejected.
 
     The refund is a fresh incoming entry rather than a deletion of the
     debit: wallet_transactions is an immutable audit trail (spec §9.4), so
     a reversal has to be visible as its own line.
     """
-    if cash_out.status != CashOutStatus.REQUESTED:
+    if cash_out.status not in from_states:
         raise CashOutStateError(
-            f"Only a requested cash-out can be failed; this one is "
-            f"{cash_out.status.value}"
+            f"A {cash_out.status.value} cash-out cannot be failed here"
         )
 
     ledger = Ledger(db)
@@ -493,5 +541,7 @@ __all__ = [
     "queue_for_settlement",
     "request_cash_out",
     "simulate_cash_in",
-    "simulate_cash_out",
+    "approve_cash_out",
+    "complete_cash_out",
+    "queue_cash_out_burn",
 ]

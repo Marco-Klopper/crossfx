@@ -56,10 +56,15 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import SessionLocal
 from app.models.beneficiary import Beneficiary
-from app.models.remittance import Remittance, RemittanceStatus
+from app.models.remittance import (
+    CashOut,
+    CashOutStatus,
+    Remittance,
+    RemittanceStatus,
+)
 from app.models.user import User
 from app.models.wallet import PlatformWallet, PoolRole
-from app.services import fee_service
+from app.services import cashin_cashout_service, fee_service
 from app.services.ledger import Direction, EntryStatus, Ledger
 from app.services.settlement_queue import SettlementQueue
 from app.services.xrpl_service import XRPLService, XRPLTransactionError
@@ -207,7 +212,10 @@ class SettlementWorker:
     ) -> None:
         """Settles one message and acks it if that is the right thing."""
         try:
-            outcome = self.settle(fields, reclaimed=reclaimed)
+            if fields.get("kind") == "cash_out":
+                outcome = self.burn_cash_out(fields)
+            else:
+                outcome = self.settle(fields, reclaimed=reclaimed)
         except SettlementError:
             # on-chain payment landed but the ledger write did not.
             logger.error(
@@ -318,6 +326,110 @@ class SettlementWorker:
         return self._record_success(
             db, remittance, recipient, amount, tx_hash
         )
+
+    # -- cash-out burn --------------------------------------------------
+
+    def burn_cash_out(
+        self, message: dict, db: Session | None = None
+    ) -> SettlementOutcome:
+        """
+        Burns an approved cash-out's net UCTUSD, then completes it.
+
+        The burn is a payment from the payout pool to the issuer, which
+        is what Marc's brief describes as handing tokens to an exchange.
+        The net amount is burned, not the gross: the fee stays in the
+        pool as the platform's revenue. Ordering matches settlement —
+        claim, on-chain leg, then the ledger write — and a rejected burn
+        refunds the reserved UCTUSD rather than leaving it debited.
+        """
+        if db is not None:
+            return self._burn_cash_out(message, db)
+        session = self.session_factory()
+        try:
+            return self._burn_cash_out(message, session)
+        finally:
+            session.close()
+
+    def _burn_cash_out(self, message: dict, db: Session) -> SettlementOutcome:
+        try:
+            cash_out_id = uuid.UUID(str(message.get("cash_out_id")))
+        except ValueError:
+            logger.error("Cash-out message has no valid id, dropping")
+            return SettlementOutcome.SKIPPED
+
+        # Compare-and-swap, as for remittances: only one worker can
+        # move an APPROVED cash-out to PROCESSING, so a redelivered
+        # message never burns twice.
+        claimed = (
+            db.query(CashOut)
+            .filter(
+                CashOut.id == cash_out_id,
+                CashOut.status == CashOutStatus.APPROVED,
+            )
+            .update(
+                {CashOut.status: CashOutStatus.PROCESSING},
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        if claimed != 1:
+            logger.info(
+                "Skipping cash-out %s — already claimed or finished",
+                cash_out_id,
+            )
+            return SettlementOutcome.SKIPPED
+
+        cash_out = db.get(CashOut, cash_out_id)
+        amount = Decimal(cash_out.net_uctusd)
+        logger.info("Burning %s UCTUSD for cash-out %s", amount, cash_out_id)
+
+        try:
+            payout_pool = self._load_pool(db, PoolRole.PAYOUT_POOL)
+            tx_hash = self.xrpl.burn(payout_pool, str(amount))
+        except SettlementError as exc:
+            return self._fail_cash_out(db, cash_out_id, str(exc))
+        except XRPLTransactionError as exc:
+            return self._fail_cash_out(db, cash_out_id, str(exc))
+        except Exception as exc:
+            logger.exception(
+                "Unexpected error burning for cash-out %s", cash_out_id
+            )
+            return self._fail_cash_out(
+                db, cash_out_id, f"{type(exc).__name__}: {exc}"
+            )
+
+        logger.info("Burn for cash-out %s settled: %s", cash_out_id, tx_hash)
+        try:
+            cashin_cashout_service.complete_cash_out(db, cash_out, tx_hash)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.exception(
+                "Burn %s succeeded but completing cash-out %s failed — "
+                "needs reconciliation, left in PROCESSING",
+                tx_hash,
+                cash_out_id,
+            )
+            raise SettlementError(
+                f"cash-out ledger write failed after on-chain success: {exc}"
+            ) from exc
+        return SettlementOutcome.SETTLED
+
+    def _fail_cash_out(
+        self, db: Session, cash_out_id: uuid.UUID, reason: str
+    ) -> SettlementOutcome:
+        """The burn did not land: refund the reserved UCTUSD and fail."""
+        db.rollback()
+        cash_out = db.get(CashOut, cash_out_id)
+        cashin_cashout_service.fail_cash_out(
+            db,
+            cash_out,
+            reason,
+            from_states=(CashOutStatus.PROCESSING,),
+        )
+        db.commit()
+        logger.error("Cash-out %s failed: %s", cash_out_id, reason)
+        return SettlementOutcome.FAILED
 
     def _record_success(
         self,

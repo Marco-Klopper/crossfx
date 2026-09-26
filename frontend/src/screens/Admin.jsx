@@ -89,7 +89,7 @@ export default function Admin({ me, onKycReviewed }) {
       () =>
         approve ? api.approveCashOut(row.id) : api.rejectCashOut(row.id, reason),
       approve
-        ? 'Payout released and the fiat leg credited.'
+        ? 'Payout released. The worker is burning the UCTUSD on-chain and will credit the fiat once it lands.'
         : 'Payout rejected and the UCTUSD refunded.',
     )
   }

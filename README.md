@@ -117,7 +117,7 @@ before testing settlement.
 ### Checking it works
 
 ```bash
-cd backend  && pytest -q && ruff check .          # 364 tests
+cd backend  && pytest -q && ruff check .          # 379 tests
 cd frontend && npm run lint && npm test && npm run build
 cd backend  && python -m scripts.walkthrough_remittance   # the whole journey, end to end
 ```

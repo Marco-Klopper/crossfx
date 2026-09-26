@@ -61,6 +61,9 @@ class CashOutStatus(str, enum.Enum):
 
     REQUESTED = "requested"
     APPROVED = "approved"
+    # Claimed by the worker: the burn is being submitted. Kept distinct
+    # from APPROVED so a redelivered message cannot burn twice.
+    PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -202,6 +205,11 @@ class CashOut(Base):
     # unique index in both SQLite and Postgres, so unkeyed requests are
     # unaffected.
     idempotency_key = Column(String, nullable=True)
+
+    # The on-chain burn (a payment of the net UCTUSD back to the issuer,
+    # standing in for the hand-over to an exchange). Null until the
+    # worker has submitted it, and forever on a rejected cash-out.
+    xrpl_tx_hash = Column(String, nullable=True)
 
     # Who released or refused the payout. KYC already records its
     # reviewer; a money movement had no such trail at all.

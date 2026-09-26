@@ -82,7 +82,7 @@ export default function App() {
     { id: 'send', label: 'Send money' },
     { id: 'wallet', label: 'Wallet' },
     { id: 'beneficiaries', label: 'Recipients' },
-    { id: 'kyc', label: 'KYC' },
+    { id: 'kyc', label: 'KYC & profile' },
     ...(isAdmin ? [{ id: 'admin', label: 'Admin' }] : []),
   ]
 

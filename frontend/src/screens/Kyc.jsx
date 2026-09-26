@@ -23,6 +23,65 @@ const EMPTY = {
   sourceOfFunds: '',
 }
 
+function ProfileCard({ me, onSaved }) {
+  const [fullName, setFullName] = useState(me.full_name)
+  const [email, setEmail] = useState(me.email)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function save(event) {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+    setBusy(true)
+    try {
+      await api.updateProfile({ fullName, email })
+      await onSaved()
+      setNotice('Profile updated.')
+    } catch (err) {
+      setError(err.detail || err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>Your profile</h2>
+      <p className="hint">
+        Name and email. KYC status and admin rights cannot be changed here.
+      </p>
+      <form onSubmit={save}>
+        <div className="field">
+          <label htmlFor="profile-name">Full name</label>
+          <input
+            id="profile-name"
+            value={fullName}
+            onChange={(event) => setFullName(event.target.value)}
+            required
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="profile-email">Email</label>
+          <input
+            id="profile-email"
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            required
+          />
+        </div>
+        {error && <Alert kind="error">{error}</Alert>}
+        {notice && <Alert kind="success">{notice}</Alert>}
+        <button type="submit" disabled={busy}>
+          {busy ? 'Saving…' : 'Save profile'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
 export default function Kyc({ me, onReviewed }) {
   const [form, setForm] = useState({
     ...EMPTY,
@@ -88,6 +147,7 @@ export default function Kyc({ me, onReviewed }) {
 
   return (
     <>
+      <ProfileCard me={me} onSaved={onReviewed} />
       <div className="card">
         <h2>KYC status</h2>
         <p className="hint">
