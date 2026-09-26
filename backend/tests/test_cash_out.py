@@ -8,6 +8,7 @@ could back three approved payouts.
 """
 import uuid
 from decimal import Decimal
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -17,7 +18,6 @@ from app.schemas.remittance import CashOutRead
 from app.services.ledger import Ledger
 from app.services.settlement_queue import SettlementQueue
 from app.services.xrpl_service import XRPLService, XRPLTransactionError
-from unittest.mock import create_autospec
 from worker.settlement_worker import SettlementOutcome, SettlementWorker
 
 
